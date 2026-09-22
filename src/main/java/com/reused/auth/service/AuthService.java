@@ -1,0 +1,135 @@
+package com.reused.auth.service;
+
+import java.time.Instant;
+
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.reused.auth.client.KakaoOAuthClient;
+import com.reused.auth.dto.request.KakaoLoginRequest;
+import com.reused.auth.dto.request.SignupRequest;
+import com.reused.auth.dto.response.AuthTokenResponse;
+import com.reused.auth.dto.response.KakaoLoginResponse;
+import com.reused.auth.token.JwtTokenProvider;
+import com.reused.auth.token.RefreshTokenStore;
+import com.reused.common.error.BusinessException;
+import com.reused.common.error.ErrorCode;
+import com.reused.user.entity.AuthProvider;
+import com.reused.user.entity.NotificationSettings;
+import com.reused.user.entity.User;
+import com.reused.user.repository.NotificationSettingsRepository;
+import com.reused.user.repository.UserRepository;
+
+@Service
+public class AuthService {
+
+	private final KakaoOAuthClient kakaoClient;
+	private final UserRepository userRepository;
+	private final NotificationSettingsRepository notificationSettingsRepository;
+	private final JwtTokenProvider tokenProvider;
+	private final RefreshTokenStore refreshTokenStore;
+
+	public AuthService(KakaoOAuthClient kakaoClient, UserRepository userRepository,
+			NotificationSettingsRepository notificationSettingsRepository,
+			JwtTokenProvider tokenProvider, RefreshTokenStore refreshTokenStore) {
+		this.kakaoClient = kakaoClient;
+		this.userRepository = userRepository;
+		this.notificationSettingsRepository = notificationSettingsRepository;
+		this.tokenProvider = tokenProvider;
+		this.refreshTokenStore = refreshTokenStore;
+	}
+
+	/**
+	 * 카카오 인가 코드로 로그인하거나 가입 진입점을 반환한다.
+	 *
+	 * <p>탈퇴 회원은 provider_user_id가 해시로 바뀌므로 원래 회원번호로는 조회되지 않는다.
+	 * 즉 재가입 경로로 흘러가는 것이 정상 동작이다. 아래 탈퇴 검사는 해시 치환 전 데이터에 대한 방어다.
+	 */
+	@Transactional
+	public LoginResult login(KakaoLoginRequest request) {
+		String providerUserId = kakaoClient.fetchProviderUserId(request.code(), request.redirectUri());
+
+		return userRepository.findByProviderAndProviderUserId(AuthProvider.KAKAO, providerUserId)
+				.map(this::loginExisting)
+				.orElseGet(() -> new LoginResult(
+						KakaoLoginResponse.signupRequired(tokenProvider.issueSignupToken(providerUserId)),
+						null));
+	}
+
+	private LoginResult loginExisting(User user) {
+		if (user.isWithdrawn()) {
+			throw new BusinessException(ErrorCode.FORBIDDEN, "탈퇴한 계정입니다.");
+		}
+		// 카카오 로그인 명세의 오류 표를 따른다.
+		// 다만 business-rules는 이용정지 중에도 로그인을 허용한다고 적고 있어 두 문서가 어긋난다.
+		// 팀 합의 전까지 엔드포인트 명세(403)를 따르며, 뒤집을 때 고칠 곳은 이 한 줄이다.
+		if (user.isSuspended()) {
+			throw new BusinessException(ErrorCode.USER_SUSPENDED);
+		}
+
+		String accessToken = tokenProvider.issueAccessToken(user.getId(), user.getRole());
+		String refreshToken = refreshTokenStore.issue(user.getId());
+		return new LoginResult(KakaoLoginResponse.login(accessToken, user), refreshToken);
+	}
+
+	/**
+	 * 닉네임과 약관 동의를 받아 가입을 확정한다. 알림 설정 1행을 같은 트랜잭션에서 만든다.
+	 */
+	@Transactional
+	public SignupResult signup(SignupRequest request) {
+		String providerUserId = tokenProvider.parseSignupToken(request.signupToken());
+
+		if (userRepository.existsByNickname(request.nickname())) {
+			throw new BusinessException(ErrorCode.CONFLICT, "이미 사용 중인 닉네임입니다.");
+		}
+
+		User user = User.signUp(AuthProvider.KAKAO, providerUserId, request.nickname(), Instant.now());
+		try {
+			user = userRepository.saveAndFlush(user);
+		}
+		catch (DataIntegrityViolationException e) {
+			// 중복 검사와 INSERT 사이의 경쟁 조건. 최종 판정은 DB의 UNIQUE 제약이다.
+			throw new BusinessException(ErrorCode.CONFLICT, "이미 사용 중인 닉네임입니다.", e);
+		}
+		notificationSettingsRepository.save(NotificationSettings.defaultsFor(user.getId()));
+
+		String accessToken = tokenProvider.issueAccessToken(user.getId(), user.getRole());
+		String refreshToken = refreshTokenStore.issue(user.getId());
+		return new SignupResult(AuthTokenResponse.of(accessToken, user), refreshToken);
+	}
+
+	/**
+	 * Refresh Token 회전. 재사용이 감지되면 해당 사용자의 토큰이 전부 폐기된다.
+	 */
+	@Transactional(readOnly = true)
+	public RefreshResult refresh(String refreshToken) {
+		RefreshTokenStore.Rotation rotation = refreshTokenStore.rotate(refreshToken);
+
+		User user = userRepository.findById(rotation.userId())
+				.orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHENTICATED));
+		if (user.isWithdrawn()) {
+			refreshTokenStore.revokeAll(user.getId());
+			throw new BusinessException(ErrorCode.UNAUTHENTICATED);
+		}
+
+		String accessToken = tokenProvider.issueAccessToken(user.getId(), user.getRole());
+		return new RefreshResult(accessToken, rotation.refreshToken());
+	}
+
+	public void logout(String refreshToken) {
+		if (refreshToken != null) {
+			refreshTokenStore.revoke(refreshToken);
+		}
+	}
+
+	public record LoginResult(KakaoLoginResponse response, String refreshToken) {
+	}
+
+	public record SignupResult(AuthTokenResponse response, String refreshToken) {
+	}
+
+	public record RefreshResult(String accessToken, String refreshToken) {
+	}
+
+}
