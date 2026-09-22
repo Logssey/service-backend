@@ -37,6 +37,7 @@ public class SecurityConfig {
 				.httpBasic(AbstractHttpConfigurer::disable)
 				.logout(AbstractHttpConfigurer::disable)
 				.authorizeHttpRequests(auth -> auth
+						.requestMatchers(HttpMethod.GET, "/api/v1/categories").permitAll()
 						// 인증 진입점. 로그아웃만 USER 권한이 필요하다.
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/kakao").permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/signup").permitAll()

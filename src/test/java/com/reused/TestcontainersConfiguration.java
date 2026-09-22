@@ -8,7 +8,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * 테스트용 컨테이너. Postgres에는 운영과 동일한 schema/001_init.sql을 적용한다.
+ * 테스트용 컨테이너. Postgres에는 운영과 동일한 스키마와 초기 데이터를 적용한다.
  * 이 파일은 Gradle processTestResources가 테스트 클래스패스로 복사한 것이며 사본이 아니다.
  */
 @TestConfiguration(proxyBeanMethods = false)
@@ -18,7 +18,7 @@ public class TestcontainersConfiguration {
 	@ServiceConnection
 	PostgreSQLContainer postgresContainer() {
 		return new PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine"))
-				.withInitScript("schema/001_init.sql");
+				.withInitScripts("schema/001_init.sql", "schema/002_seed_categories.sql");
 	}
 
 	@Bean
