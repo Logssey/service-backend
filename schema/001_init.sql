@@ -24,6 +24,8 @@
 -- DROP TABLE IF EXISTS notifications CASCADE;
 -- DROP TABLE IF EXISTS blocks CASCADE;
 -- DROP TABLE IF EXISTS reports CASCADE;
+-- DROP TABLE IF EXISTS community_comments CASCADE;
+-- DROP TABLE IF EXISTS community_posts CASCADE;
 -- DROP TABLE IF EXISTS reviews CASCADE;
 -- DROP TABLE IF EXISTS messages CASCADE;
 -- DROP TABLE IF EXISTS chat_rooms CASCADE;
@@ -371,7 +373,94 @@ CREATE INDEX idx_reviews_reviewee
     ON reviews (reviewee_id);
 
 -- ------------------------------------------------------------
--- 12. reports (신고)
+-- 12. community_posts (커뮤니티 게시글)
+-- ------------------------------------------------------------
+CREATE TABLE community_posts (
+    post_id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    author_id       BIGINT        NOT NULL,
+    category        VARCHAR(20)   NOT NULL,
+    title           VARCHAR(100)  NOT NULL,
+    content         VARCHAR(3000) NOT NULL,
+    status          VARCHAR(20)   NOT NULL DEFAULT 'PUBLISHED',
+    comment_count   INTEGER       NOT NULL DEFAULT 0,
+    view_count      INTEGER       NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ,
+    deleted_at      TIMESTAMPTZ,
+    deleted_by      BIGINT,
+
+    CONSTRAINT ck_community_posts_category
+        CHECK (category IN ('GENERAL', 'QUESTION', 'TIP', 'SHARE')),
+    CONSTRAINT ck_community_posts_title_length
+        CHECK (char_length(title) BETWEEN 2 AND 100),
+    CONSTRAINT ck_community_posts_content_length
+        CHECK (char_length(content) BETWEEN 10 AND 3000),
+    CONSTRAINT ck_community_posts_status
+        CHECK (status IN ('PUBLISHED', 'HIDDEN')),
+    CONSTRAINT ck_community_posts_comment_count
+        CHECK (comment_count >= 0),
+    CONSTRAINT ck_community_posts_view_count
+        CHECK (view_count >= 0),
+    CONSTRAINT fk_community_posts_author
+        FOREIGN KEY (author_id) REFERENCES users (user_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_community_posts_deleted_by
+        FOREIGN KEY (deleted_by) REFERENCES users (user_id) ON DELETE RESTRICT
+);
+
+COMMENT ON TABLE  community_posts IS '커뮤니티 게시글. 공개 조회, 작성자 소프트 삭제';
+COMMENT ON COLUMN community_posts.category IS 'GENERAL, QUESTION, TIP, SHARE';
+COMMENT ON COLUMN community_posts.status IS 'PUBLISHED: 공개, HIDDEN: 기존 신고 처리 흐름을 통한 관리자 숨김';
+COMMENT ON COLUMN community_posts.deleted_at IS '작성자 삭제 시각. 삭제된 게시글은 조회에서 제외';
+
+CREATE INDEX idx_community_posts_author
+    ON community_posts (author_id);
+
+CREATE INDEX idx_community_posts_latest
+    ON community_posts (created_at DESC, post_id DESC)
+    WHERE deleted_at IS NULL AND status = 'PUBLISHED';
+
+CREATE INDEX idx_community_posts_category_latest
+    ON community_posts (category, created_at DESC, post_id DESC)
+    WHERE deleted_at IS NULL AND status = 'PUBLISHED';
+
+-- ------------------------------------------------------------
+-- 13. community_comments (커뮤니티 댓글)
+-- ------------------------------------------------------------
+CREATE TABLE community_comments (
+    comment_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    post_id         BIGINT       NOT NULL,
+    author_id       BIGINT       NOT NULL,
+    content         VARCHAR(500) NOT NULL,
+    status          VARCHAR(20)  NOT NULL DEFAULT 'PUBLISHED',
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    deleted_at      TIMESTAMPTZ,
+    deleted_by      BIGINT,
+
+    CONSTRAINT ck_community_comments_content_length
+        CHECK (char_length(content) BETWEEN 1 AND 500),
+    CONSTRAINT ck_community_comments_status
+        CHECK (status IN ('PUBLISHED', 'HIDDEN')),
+    CONSTRAINT fk_community_comments_post
+        FOREIGN KEY (post_id) REFERENCES community_posts (post_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_community_comments_author
+        FOREIGN KEY (author_id) REFERENCES users (user_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_community_comments_deleted_by
+        FOREIGN KEY (deleted_by) REFERENCES users (user_id) ON DELETE RESTRICT
+);
+
+COMMENT ON TABLE  community_comments IS '커뮤니티 평면 텍스트 댓글. 대댓글은 지원하지 않음';
+COMMENT ON COLUMN community_comments.status IS 'PUBLISHED: 공개, HIDDEN: 기존 신고 처리 흐름을 통한 관리자 숨김';
+COMMENT ON COLUMN community_comments.deleted_at IS '작성자 삭제 시각. 삭제된 댓글은 조회에서 제외';
+
+CREATE INDEX idx_community_comments_post_latest
+    ON community_comments (post_id, created_at DESC, comment_id DESC)
+    WHERE deleted_at IS NULL AND status = 'PUBLISHED';
+
+CREATE INDEX idx_community_comments_author
+    ON community_comments (author_id);
+
+-- ------------------------------------------------------------
+-- 14. reports (신고)
 -- ------------------------------------------------------------
 CREATE TABLE reports (
     report_id       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -387,7 +476,7 @@ CREATE TABLE reports (
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
 
     CONSTRAINT ck_reports_target_type
-        CHECK (target_type IN ('LISTING', 'USER', 'MESSAGE')),
+        CHECK (target_type IN ('LISTING', 'USER', 'MESSAGE', 'COMMUNITY_POST', 'COMMUNITY_COMMENT')),
     CONSTRAINT ck_reports_status
         CHECK (status IN ('RECEIVED', 'IN_REVIEW', 'RESOLVED', 'REJECTED')),
     CONSTRAINT fk_reports_reporter
@@ -396,7 +485,7 @@ CREATE TABLE reports (
         FOREIGN KEY (handled_by) REFERENCES users (user_id) ON DELETE RESTRICT
 );
 
-COMMENT ON TABLE  reports IS '게시글·사용자·메시지 신고';
+COMMENT ON TABLE  reports IS '중고거래 게시글·사용자·메시지·커뮤니티 게시글·댓글 신고';
 COMMENT ON COLUMN reports.target_id IS 'target_type과 함께 다형 참조. FK 없으므로 존재 여부는 애플리케이션에서 검증';
 
 -- 미처리 상태의 동일 신고자·대상·사유 조합 중복 방지
@@ -405,7 +494,7 @@ CREATE UNIQUE INDEX uq_reports_pending_duplicate
     WHERE status IN ('RECEIVED', 'IN_REVIEW');
 
 -- ------------------------------------------------------------
--- 13. blocks (사용자 차단)
+-- 15. blocks (사용자 차단)
 -- ------------------------------------------------------------
 CREATE TABLE blocks (
     block_id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -424,7 +513,7 @@ CREATE TABLE blocks (
 COMMENT ON TABLE blocks IS '단방향 차단. 차단당한 쪽은 차단 사실을 알 수 없음';
 
 -- ------------------------------------------------------------
--- 14. notifications (알림)
+-- 16. notifications (알림)
 -- ------------------------------------------------------------
 CREATE TABLE notifications (
     notification_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -448,7 +537,7 @@ CREATE INDEX idx_notifications_user
     ON notifications (user_id);
 
 -- ------------------------------------------------------------
--- 15. notification_settings (알림 수신 설정)
+-- 17. notification_settings (알림 수신 설정)
 -- ------------------------------------------------------------
 CREATE TABLE notification_settings (
     user_id         BIGINT      PRIMARY KEY,
@@ -466,7 +555,7 @@ CREATE TABLE notification_settings (
 COMMENT ON TABLE notification_settings IS '유형별 알림 수신 설정. 회원가입 시 기본값으로 1행 생성';
 
 -- ------------------------------------------------------------
--- 16. notices (공지사항)
+-- 18. notices (공지사항)
 -- ------------------------------------------------------------
 CREATE TABLE notices (
     notice_id   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -485,7 +574,7 @@ CREATE TABLE notices (
 COMMENT ON TABLE notices IS '관리자 전용 공지사항';
 
 -- ------------------------------------------------------------
--- 17. audit_logs (감사 로그)
+-- 19. audit_logs (감사 로그)
 -- ------------------------------------------------------------
 CREATE TABLE audit_logs (
     audit_log_id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
