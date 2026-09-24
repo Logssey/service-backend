@@ -3,6 +3,8 @@ package com.reused.auth;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -12,6 +14,8 @@ import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -71,7 +75,7 @@ class AuthIntegrationTest {
 	@Test
 	@DisplayName("가입하지 않은 카카오 계정은 SIGNUP_REQUIRED와 signupToken을 받는다")
 	void newUserGetsSignupToken() throws Exception {
-		mockMvc.perform(kakaoLogin())
+		mockMvc.perform(oauthLogin())
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.status").value("SIGNUP_REQUIRED"))
 				.andExpect(jsonPath("$.accessToken").doesNotExist())
@@ -114,7 +118,7 @@ class AuthIntegrationTest {
 	void existingUserLogsIn() throws Exception {
 		signupNewUser("재현");
 
-		mockMvc.perform(kakaoLogin())
+		mockMvc.perform(oauthLogin())
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.status").value("LOGIN"))
 				.andExpect(jsonPath("$.accessToken").isNotEmpty())
@@ -173,9 +177,20 @@ class AuthIntegrationTest {
 		signupNewUser("재현");
 		jdbcTemplate.update("UPDATE users SET status = 'SUSPENDED'");
 
-		mockMvc.perform(kakaoLogin())
+		mockMvc.perform(oauthLogin())
 				.andExpect(status().isForbidden())
 				.andExpect(jsonPath("$.code").value("USER_SUSPENDED"));
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = { "google", "local", "KAKAO" })
+	@DisplayName("지원하지 않는 provider는 404 NOT_FOUND이고 제공자 API를 호출하지 않는다")
+	void unsupportedProviderIsNotFound(String provider) throws Exception {
+		mockMvc.perform(oauthLogin(provider))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.code").value("NOT_FOUND"));
+
+		verify(kakaoOAuthClient, never()).fetchProviderUserId(any(), any());
 	}
 
 	@Test
@@ -261,10 +276,15 @@ class AuthIntegrationTest {
 
 	// --- helpers ---
 
-	private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder kakaoLogin() throws Exception {
+	private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder oauthLogin() throws Exception {
+		return oauthLogin("kakao");
+	}
+
+	private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder oauthLogin(String provider)
+			throws Exception {
 		String body = objectMapper.writeValueAsString(
 				java.util.Map.of("code", "auth-code", "redirectUri", "https://reused.app/oauth/callback"));
-		return post("/api/v1/auth/kakao").contentType(MediaType.APPLICATION_JSON).content(body);
+		return post("/api/v1/auth/oauth/{provider}", provider).contentType(MediaType.APPLICATION_JSON).content(body);
 	}
 
 	private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder signup(
@@ -275,7 +295,7 @@ class AuthIntegrationTest {
 	}
 
 	private String signupTokenFromLogin() throws Exception {
-		MvcResult result = mockMvc.perform(kakaoLogin()).andExpect(status().isOk()).andReturn();
+		MvcResult result = mockMvc.perform(oauthLogin()).andExpect(status().isOk()).andReturn();
 		JsonNode json = objectMapper.readTree(result.getResponse().getContentAsString());
 		return json.get("signupToken").asString();
 	}

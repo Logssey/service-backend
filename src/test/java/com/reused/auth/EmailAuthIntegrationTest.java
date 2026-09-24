@@ -414,7 +414,7 @@ class EmailAuthIntegrationTest {
 	private String signupKakaoUser() throws Exception {
 		given(kakaoOAuthClient.provider()).willReturn(AuthProvider.KAKAO);
 		given(kakaoOAuthClient.fetchProviderUserId(any(), any())).willReturn("1234567890");
-		MvcResult loginResult = mockMvc.perform(json(post("/api/v1/auth/kakao"),
+		MvcResult loginResult = mockMvc.perform(json(post("/api/v1/auth/oauth/kakao"),
 						Map.of("code", "auth-code", "redirectUri", "https://reused.app/oauth/callback")))
 				.andExpect(status().isOk()).andReturn();
 		String signupToken = objectMapper.readTree(loginResult.getResponse().getContentAsString())
