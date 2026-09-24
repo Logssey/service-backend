@@ -73,8 +73,14 @@ public class UserIdentity {
 		this.createdAt = Instant.now();
 	}
 
-	public static UserIdentity kakao(User user, String providerUserId) {
-		return new UserIdentity(user, AuthProvider.KAKAO, providerUserId, null, null);
+	/**
+	 * @param provider 소셜 제공자. LOCAL은 {@link #local}로 만든다
+	 */
+	public static UserIdentity social(User user, AuthProvider provider, String providerUserId) {
+		if (provider == AuthProvider.LOCAL) {
+			throw new IllegalArgumentException("LOCAL 인증 수단은 local()로 만든다.");
+		}
+		return new UserIdentity(user, provider, providerUserId, null, null);
 	}
 
 	/**
