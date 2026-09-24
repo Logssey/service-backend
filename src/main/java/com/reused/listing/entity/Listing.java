@@ -116,4 +116,11 @@ public class Listing {
 		this.updatedAt = Instant.now();
 	}
 
+	public void softDelete(Long deletedBy) {
+		Instant now = Instant.now();
+		this.deletedAt = now;
+		this.deletedBy = deletedBy;
+		this.updatedAt = now;
+	}
+
 }

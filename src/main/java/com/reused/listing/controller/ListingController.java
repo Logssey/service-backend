@@ -1,6 +1,7 @@
 package com.reused.listing.controller;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,6 +24,7 @@ import com.reused.listing.query.ListingQueryService;
 import com.reused.listing.query.ListingSearchRequest;
 import com.reused.listing.query.ListingSummaryResponse;
 import com.reused.listing.service.ListingCreateService;
+import com.reused.listing.service.ListingDeleteService;
 import com.reused.listing.service.ListingUpdateService;
 
 import jakarta.validation.Valid;
@@ -32,14 +34,17 @@ import jakarta.validation.Valid;
 public class ListingController {
 
 	private final ListingCreateService listingCreateService;
+	private final ListingDeleteService listingDeleteService;
 	private final ListingUpdateService listingUpdateService;
 	private final ListingQueryService listingQueryService;
 	private final CurrentUserProvider currentUserProvider;
 
-	public ListingController(ListingCreateService listingCreateService, ListingUpdateService listingUpdateService,
+	public ListingController(ListingCreateService listingCreateService, ListingDeleteService listingDeleteService,
+			ListingUpdateService listingUpdateService,
 			ListingQueryService listingQueryService,
 			CurrentUserProvider currentUserProvider) {
 		this.listingCreateService = listingCreateService;
+		this.listingDeleteService = listingDeleteService;
 		this.listingUpdateService = listingUpdateService;
 		this.listingQueryService = listingQueryService;
 		this.currentUserProvider = currentUserProvider;
@@ -56,6 +61,12 @@ public class ListingController {
 	public ListingDetailResponse update(@AuthUser AuthPrincipal principal, @PathVariable Long listingId,
 			@Valid @RequestBody ListingUpdateRequest request) {
 		return listingUpdateService.update(principal, listingId, request);
+	}
+
+	@DeleteMapping("/{listingId}")
+	@ResponseStatus(HttpStatus.NO_CONTENT)
+	public void delete(@AuthUser AuthPrincipal principal, @PathVariable Long listingId) {
+		listingDeleteService.delete(principal, listingId);
 	}
 
 	@GetMapping
