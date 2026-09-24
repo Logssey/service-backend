@@ -38,10 +38,15 @@ public class SecurityConfig {
 				.logout(AbstractHttpConfigurer::disable)
 				.authorizeHttpRequests(auth -> auth
 						.requestMatchers(HttpMethod.GET, "/api/v1/categories").permitAll()
-						// 인증 진입점. 로그아웃만 USER 권한이 필요하다.
+						.requestMatchers(HttpMethod.GET, "/api/v1/users/nickname/check").permitAll()
+						// 인증 진입점. 로그아웃과 이메일 소유 확인만 USER 권한이 필요하다.
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/kakao").permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/signup").permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/refresh").permitAll()
+						.requestMatchers(HttpMethod.POST, "/api/v1/auth/email/signup").permitAll()
+						.requestMatchers(HttpMethod.POST, "/api/v1/auth/email/login").permitAll()
+						.requestMatchers(HttpMethod.POST, "/api/v1/auth/password/reset").permitAll()
+						.requestMatchers(HttpMethod.POST, "/api/v1/auth/password/reset/confirm").permitAll()
 						.anyRequest().authenticated())
 				.exceptionHandling(handler -> handler
 						.authenticationEntryPoint(authenticationEntryPoint)
