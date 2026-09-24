@@ -23,7 +23,12 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-security'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+	// Spring Boot 4는 RestClient.Builder 자동 구성이 webmvc 스타터에 포함되지 않는다. KakaoApiClient가 사용한다.
+	implementation 'org.springframework.boot:spring-boot-starter-restclient'
 	implementation 'org.springframework.security:spring-security-oauth2-jose'
+	implementation 'org.springframework.boot:spring-boot-starter-mail'
+	// Argon2PasswordEncoder가 Bouncy Castle 구현을 사용한다(business-rules 정책 값: argon2id).
+	implementation 'org.bouncycastle:bcprov-jdk18on:1.81'
 	compileOnly 'org.projectlombok:lombok'
 	runtimeOnly 'org.postgresql:postgresql'
 	annotationProcessor 'org.projectlombok:lombok'
