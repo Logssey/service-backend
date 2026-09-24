@@ -15,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -148,13 +149,26 @@ class AuthIntegrationTest {
 				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
 	}
 
-	@Test
-	@DisplayName("약관에 동의하지 않으면 400이다")
-	void termsMustBeAgreed() throws Exception {
+	@ParameterizedTest(name = "이용약관={0}, 개인정보={1}")
+	@CsvSource({ "false, true", "true, false" })
+	@DisplayName("필수 약관 2건 중 하나라도 동의하지 않으면 400이다")
+	void bothTermsMustBeAgreed(boolean termsOfService, boolean privacyPolicy) throws Exception {
 		String signupToken = signupTokenFromLogin();
-		String body = objectMapper.writeValueAsString(
-				new java.util.LinkedHashMap<>(java.util.Map.of(
-						"signupToken", signupToken, "nickname", "재현", "termsAgreed", false)));
+		String body = objectMapper.writeValueAsString(java.util.Map.of(
+				"signupToken", signupToken, "nickname", "재현",
+				"termsOfServiceAgreed", termsOfService, "privacyPolicyAgreed", privacyPolicy));
+
+		mockMvc.perform(post("/api/v1/auth/signup").contentType(MediaType.APPLICATION_JSON).content(body))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
+	}
+
+	@Test
+	@DisplayName("예전 단일 필드 termsAgreed만 보내면 새 약관 필드가 빠진 요청이므로 400이다")
+	void legacyTermsFieldIsNotAccepted() throws Exception {
+		String signupToken = signupTokenFromLogin();
+		String body = objectMapper.writeValueAsString(java.util.Map.of(
+				"signupToken", signupToken, "nickname", "재현", "termsAgreed", true));
 
 		mockMvc.perform(post("/api/v1/auth/signup").contentType(MediaType.APPLICATION_JSON).content(body))
 				.andExpect(status().isBadRequest())
@@ -290,7 +304,8 @@ class AuthIntegrationTest {
 	private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder signup(
 			String signupToken, String nickname) throws Exception {
 		String body = objectMapper.writeValueAsString(
-				java.util.Map.of("signupToken", signupToken, "nickname", nickname, "termsAgreed", true));
+				java.util.Map.of("signupToken", signupToken, "nickname", nickname,
+						"termsOfServiceAgreed", true, "privacyPolicyAgreed", true));
 		return post("/api/v1/auth/signup").contentType(MediaType.APPLICATION_JSON).content(body);
 	}
 

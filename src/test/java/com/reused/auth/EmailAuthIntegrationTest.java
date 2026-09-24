@@ -420,7 +420,8 @@ class EmailAuthIntegrationTest {
 		String signupToken = objectMapper.readTree(loginResult.getResponse().getContentAsString())
 				.get("signupToken").asString();
 		MvcResult signupResult = mockMvc.perform(json(post("/api/v1/auth/signup"),
-						Map.of("signupToken", signupToken, "nickname", "카카오유저", "termsAgreed", true)))
+						Map.of("signupToken", signupToken, "nickname", "카카오유저",
+								"termsOfServiceAgreed", true, "privacyPolicyAgreed", true)))
 				.andExpect(status().isCreated()).andReturn();
 		return objectMapper.readTree(signupResult.getResponse().getContentAsString()).get("accessToken").asString();
 	}
