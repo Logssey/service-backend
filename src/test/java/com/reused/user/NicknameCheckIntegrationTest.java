@@ -16,7 +16,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.reused.TestcontainersConfiguration;
-import com.reused.auth.client.KakaoOAuthClient;
+import com.reused.auth.client.OAuthProviderClient;
 import com.reused.auth.mail.AuthMailSender;
 
 @Import(TestcontainersConfiguration.class)
@@ -31,7 +31,7 @@ class NicknameCheckIntegrationTest {
 	private JdbcTemplate jdbcTemplate;
 
 	@MockitoBean
-	private KakaoOAuthClient kakaoOAuthClient;
+	private OAuthProviderClient kakaoOAuthClient;
 
 	@MockitoBean
 	private AuthMailSender mailSender;

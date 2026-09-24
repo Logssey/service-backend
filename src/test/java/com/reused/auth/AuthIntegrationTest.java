@@ -27,7 +27,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import com.reused.TestcontainersConfiguration;
-import com.reused.auth.client.KakaoOAuthClient;
+import com.reused.auth.client.OAuthProviderClient;
+import com.reused.user.entity.AuthProvider;
 
 /**
  * 인증 흐름 통합 테스트. 실제 Postgres·Redis 컨테이너 위에서 돌고, 외부 카카오 호출만 대역으로 바꾼다.
@@ -53,7 +54,7 @@ class AuthIntegrationTest {
 	private StringRedisTemplate redisTemplate;
 
 	@MockitoBean
-	private KakaoOAuthClient kakaoOAuthClient;
+	private OAuthProviderClient kakaoOAuthClient;
 
 	@BeforeEach
 	void resetState() {
@@ -63,6 +64,7 @@ class AuthIntegrationTest {
 			connection.serverCommands().flushDb();
 			return null;
 		});
+		given(kakaoOAuthClient.provider()).willReturn(AuthProvider.KAKAO);
 		given(kakaoOAuthClient.fetchProviderUserId(any(), any())).willReturn(KAKAO_USER_ID);
 	}
 

@@ -1,12 +1,13 @@
 package com.reused.auth.service;
 
 import java.time.Instant;
+import java.util.List;
 
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.reused.auth.client.KakaoOAuthClient;
+import com.reused.auth.client.OAuthProviderClient;
 import com.reused.auth.dto.request.KakaoLoginRequest;
 import com.reused.auth.dto.request.SignupRequest;
 import com.reused.auth.dto.response.AuthTokenResponse;
@@ -30,18 +31,18 @@ import com.reused.user.repository.UserRepository;
 @Service
 public class AuthService {
 
-	private final KakaoOAuthClient kakaoClient;
+	private final List<OAuthProviderClient> providerClients;
 	private final UserRepository userRepository;
 	private final UserIdentityRepository identityRepository;
 	private final NotificationSettingsRepository notificationSettingsRepository;
 	private final JwtTokenProvider tokenProvider;
 	private final RefreshTokenStore refreshTokenStore;
 
-	public AuthService(KakaoOAuthClient kakaoClient, UserRepository userRepository,
+	public AuthService(List<OAuthProviderClient> providerClients, UserRepository userRepository,
 			UserIdentityRepository identityRepository,
 			NotificationSettingsRepository notificationSettingsRepository,
 			JwtTokenProvider tokenProvider, RefreshTokenStore refreshTokenStore) {
-		this.kakaoClient = kakaoClient;
+		this.providerClients = providerClients;
 		this.userRepository = userRepository;
 		this.identityRepository = identityRepository;
 		this.notificationSettingsRepository = notificationSettingsRepository;
@@ -57,13 +58,25 @@ public class AuthService {
 	 */
 	@Transactional
 	public LoginResult login(KakaoLoginRequest request) {
-		String providerUserId = kakaoClient.fetchProviderUserId(request.code(), request.redirectUri());
+		AuthProvider provider = AuthProvider.KAKAO;
+		String providerUserId = clientFor(provider).fetchProviderUserId(request.code(), request.redirectUri());
 
-		return identityRepository.findByProviderAndProviderUserId(AuthProvider.KAKAO, providerUserId)
+		return identityRepository.findByProviderAndProviderUserId(provider, providerUserId)
 				.map(identity -> loginExisting(identity.getUser()))
 				.orElseGet(() -> new LoginResult(
-						KakaoLoginResponse.signupRequired(tokenProvider.issueSignupToken(providerUserId)),
+						KakaoLoginResponse.signupRequired(tokenProvider.issueSignupToken(provider, providerUserId)),
 						null));
+	}
+
+	/**
+	 * 구현체를 호출 시점에 고른다. 생성 시점에 맵으로 묶지 않는 이유는
+	 * 테스트 대역의 {@code provider()} 스텁이 컨텍스트 생성 뒤에 설정되기 때문이다.
+	 */
+	private OAuthProviderClient clientFor(AuthProvider provider) {
+		return providerClients.stream()
+				.filter(client -> client.provider() == provider)
+				.findFirst()
+				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "지원하지 않는 로그인 제공자입니다."));
 	}
 
 	private LoginResult loginExisting(User user) {
@@ -85,11 +98,11 @@ public class AuthService {
 
 	/**
 	 * 닉네임과 약관 동의를 받아 가입을 확정한다.
-	 * users 행, KAKAO 인증 수단 행, 알림 설정 행을 한 트랜잭션에서 만든다.
+	 * users 행, signupToken에 담긴 제공자의 인증 수단 행, 알림 설정 행을 한 트랜잭션에서 만든다.
 	 */
 	@Transactional
 	public SignupResult signup(SignupRequest request) {
-		String providerUserId = tokenProvider.parseSignupToken(request.signupToken());
+		JwtTokenProvider.SignupTokenClaims signupClaims = tokenProvider.parseSignupToken(request.signupToken());
 
 		if (userRepository.existsByNickname(request.nickname())) {
 			throw new BusinessException(ErrorCode.CONFLICT, "이미 사용 중인 닉네임입니다.");
@@ -104,11 +117,12 @@ public class AuthService {
 			throw new BusinessException(ErrorCode.CONFLICT, "이미 사용 중인 닉네임입니다.", e);
 		}
 		try {
-			identityRepository.saveAndFlush(UserIdentity.kakao(user, providerUserId));
+			identityRepository.saveAndFlush(
+					UserIdentity.social(user, signupClaims.provider(), signupClaims.providerUserId()));
 		}
 		catch (DataIntegrityViolationException e) {
 			// 같은 signupToken으로 온보딩을 두 번 완료하려는 경우
-			throw new BusinessException(ErrorCode.CONFLICT, "이미 가입된 카카오 계정입니다.", e);
+			throw new BusinessException(ErrorCode.CONFLICT, "이미 가입된 소셜 계정입니다.", e);
 		}
 		notificationSettingsRepository.save(NotificationSettings.defaultsFor(user.getId()));
 
