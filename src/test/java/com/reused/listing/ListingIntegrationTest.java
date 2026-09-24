@@ -1,6 +1,9 @@
 package com.reused.listing;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -9,11 +12,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -36,6 +41,7 @@ import com.reused.TestcontainersConfiguration;
 import com.reused.auth.client.OAuthProviderClient;
 import com.reused.auth.mail.AuthMailSender;
 import com.reused.auth.token.JwtTokenProvider;
+import com.reused.image.storage.ImageStorage;
 import com.reused.user.entity.UserRole;
 
 @Import(TestcontainersConfiguration.class)
@@ -64,10 +70,15 @@ class ListingIntegrationTest {
 	@MockitoBean
 	private AuthMailSender mailSender;
 
+	@MockitoBean
+	private ImageStorage imageStorage;
+
 	@BeforeEach
 	void resetState() {
 		// FK를 따라 게시글·이미지·관심·거래·후기를 지운다. 초기 카테고리는 유지한다.
 		jdbcTemplate.execute("TRUNCATE users RESTART IDENTITY CASCADE");
+		when(imageStorage.presignRead(anyString(), any(Duration.class)))
+				.thenAnswer(invocation -> "https://images.example.test/" + invocation.getArgument(0));
 	}
 
 	@Test
@@ -157,20 +168,116 @@ class ListingIntegrationTest {
 	}
 
 	@Test
-	@DisplayName("이미지 없는 등록은 가능하고 이미지 ID 연결은 현재 503을 반환한다")
-	void imageIdsAreUnavailableUntilImageUploadIsImplemented() throws Exception {
+	@DisplayName("검증된 이미지를 요청 순서로 게시글에 연결하고 공개 조회에 서명 URL을 제공한다")
+	void createAttachesVerifiedImagesAndPublishesSignedUrls() throws Exception {
 		Long sellerId = insertUser("판매자", UserRole.USER);
 		Map<String, Object> body = createBody(categoryId("디지털기기"));
 		String authorization = bearer(sellerId, UserRole.USER);
+		Long firstImageId = insertVerifiedImage(sellerId, null);
+		Long secondImageId = insertVerifiedImage(sellerId, null);
+		body.put("imageIds", List.of(secondImageId, firstImageId));
 
-		mockMvc.perform(json(post(LISTINGS), body).header("Authorization", authorization))
+		MvcResult created = mockMvc.perform(json(post(LISTINGS), body).header("Authorization", authorization))
 				.andExpect(status().isCreated())
-				.andExpect(jsonPath("$.listingId").isNumber());
-		body.put("imageIds", List.of(12345L));
-		mockMvc.perform(json(post(LISTINGS), body).header("Authorization", authorization))
-				.andExpect(status().isServiceUnavailable())
-				.andExpect(jsonPath("$.code").value("SERVICE_UNAVAILABLE"));
+				.andReturn();
+		Long listingId = response(created).get("listingId").asLong();
+		List<Map<String, Object>> imageRows = jdbcTemplate.queryForList(
+				"SELECT image_id, listing_id, display_order FROM listing_images WHERE listing_id = ? ORDER BY display_order",
+				listingId);
+		assertThat(imageRows).hasSize(2);
+		assertThat(((Number) imageRows.get(0).get("image_id")).longValue()).isEqualTo(secondImageId);
+		assertThat(((Number) imageRows.get(1).get("image_id")).longValue()).isEqualTo(firstImageId);
+		assertThat(((Number) imageRows.get(0).get("display_order")).intValue()).isZero();
+		assertThat(((Number) imageRows.get(1).get("display_order")).intValue()).isEqualTo(1);
+
+		mockMvc.perform(get(LISTINGS + "/{listingId}", listingId))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.images[0].imageId").value(secondImageId))
+				.andExpect(jsonPath("$.images[0].displayOrder").value(0))
+				.andExpect(jsonPath("$.images[0].url").value("https://images.example.test/" + imageKey(secondImageId)))
+				.andExpect(jsonPath("$.images[1].imageId").value(firstImageId));
+		mockMvc.perform(get(LISTINGS))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.items[0].thumbnailUrl")
+						.value("https://images.example.test/" + imageKey(secondImageId)));
 		assertThat(jdbcTemplate.queryForObject("SELECT count(*) FROM listings", Long.class)).isEqualTo(1);
+	}
+
+	@Test
+	@DisplayName("이미지 연결은 검증 상태와 업로더를 확인하고 중복 ID를 거절한다")
+	void createRejectsInvalidImageAttachmentsWithoutSavingListing() throws Exception {
+		Long sellerId = insertUser("판매자", UserRole.USER);
+		Long otherId = insertUser("다른회원", UserRole.USER);
+		Long pendingId = insertImage(sellerId, null, "PENDING");
+		Long otherImageId = insertVerifiedImage(otherId, null);
+		Long validId = insertVerifiedImage(sellerId, null);
+		String authorization = bearer(sellerId, UserRole.USER);
+		Long categoryId = categoryId("디지털기기");
+
+		assertInvalidCreateImages(categoryId, authorization, List.of(validId, validId), 400, "INVALID_INPUT");
+		assertInvalidCreateImages(categoryId, authorization, List.of(pendingId), 400, "INVALID_INPUT");
+		assertInvalidCreateImages(categoryId, authorization, List.of(otherImageId), 403, "FORBIDDEN");
+		assertInvalidCreateImages(categoryId, authorization, List.of(999999L), 400, "INVALID_INPUT");
+		assertThat(jdbcTemplate.queryForObject("SELECT count(*) FROM listings", Long.class)).isZero();
+		assertThat(jdbcTemplate.queryForObject(
+				"SELECT listing_id FROM listing_images WHERE image_id = ?", Long.class, validId)).isNull();
+	}
+
+	@Test
+	@DisplayName("이미 연결된 이미지는 다른 게시글에 재사용할 수 없다")
+	void createRejectsImageAttachedToAnotherListing() throws Exception {
+		Long sellerId = insertUser("판매자", UserRole.USER);
+		Long categoryId = categoryId("디지털기기");
+		Long existingListingId = insertListing(sellerId, categoryId, "기존 게시글", 100, "ON_SALE", BASE_TIME);
+		Long attachedImageId = insertVerifiedImage(sellerId, existingListingId);
+
+		assertInvalidCreateImages(categoryId, bearer(sellerId, UserRole.USER),
+				List.of(attachedImageId), 409, "CONFLICT");
+		assertThat(jdbcTemplate.queryForObject("SELECT count(*) FROM listings", Long.class)).isEqualTo(1);
+	}
+
+	@Test
+	@DisplayName("수정에서 imageIds 생략은 유지, ID 배열은 재정렬·교체, 빈 배열은 모두 해제한다")
+	void updateImageIdsPreservesReplacesAndClearsImages() throws Exception {
+		Long sellerId = insertUser("판매자", UserRole.USER);
+		Long listingId = insertListing(sellerId, categoryId("디지털기기"), "기존 게시글", 100,
+				"ON_SALE", BASE_TIME);
+		Long firstId = insertVerifiedImage(sellerId, listingId);
+		Long secondId = insertVerifiedImage(sellerId, listingId);
+		Long newId = insertVerifiedImage(sellerId, null);
+		jdbcTemplate.update("UPDATE listing_images SET display_order = 1 WHERE image_id = ?", secondId);
+		String authorization = bearer(sellerId, UserRole.USER);
+
+		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId), Map.of("title", "수정 제목"))
+				.header("Authorization", authorization))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.images[0].imageId").value(firstId))
+				.andExpect(jsonPath("$.images[1].imageId").value(secondId))
+				.andExpect(jsonPath("$.viewCount").value(0));
+
+		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId),
+					Map.of("imageIds", List.of(newId, secondId)))
+				.header("Authorization", authorization))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.images[0].imageId").value(newId))
+				.andExpect(jsonPath("$.images[0].displayOrder").value(0))
+				.andExpect(jsonPath("$.images[1].imageId").value(secondId))
+				.andExpect(jsonPath("$.images[1].displayOrder").value(1))
+				.andExpect(jsonPath("$.viewCount").value(0));
+		assertThat(jdbcTemplate.queryForObject(
+				"SELECT count(*) FROM listing_images WHERE listing_id = ?", Long.class, listingId))
+				.isEqualTo(2);
+		assertThat(jdbcTemplate.queryForObject(
+				"SELECT listing_id FROM listing_images WHERE image_id = ?", Long.class, firstId)).isNull();
+
+		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId),
+					Map.of("imageIds", List.of()))
+				.header("Authorization", authorization))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.images.length()").value(0));
+		assertThat(jdbcTemplate.queryForObject(
+				"SELECT count(*) FROM listing_images WHERE listing_id = ?", Long.class, listingId))
+				.isZero();
 	}
 
 	@Test
@@ -252,8 +359,8 @@ class ListingIntegrationTest {
 	}
 
 	@Test
-	@DisplayName("수정 입력과 카테고리를 검증하고 이미지 연결이 불가능함을 명확히 알린다")
-	void updateValidatesFieldsAndImageAvailability() throws Exception {
+	@DisplayName("수정 입력과 카테고리 및 존재하지 않는 이미지를 검증한다")
+	void updateValidatesFieldsAndImages() throws Exception {
 		Long sellerId = insertUser("판매자", UserRole.USER);
 		Long listingId = insertListing(sellerId, categoryId("디지털기기"), "원래 제목", 100,
 				"ON_SALE", BASE_TIME);
@@ -275,8 +382,8 @@ class ListingIntegrationTest {
 		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId),
 					Map.of("imageIds", List.of(7)))
 					.header("Authorization", authorization))
-				.andExpect(status().isServiceUnavailable())
-				.andExpect(jsonPath("$.code").value("SERVICE_UNAVAILABLE"));
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
 		Long inactiveCategoryId = categoryId("도서");
 		jdbcTemplate.update("UPDATE categories SET is_active = false WHERE category_id = ?", inactiveCategoryId);
 		try {
@@ -601,6 +708,32 @@ class ListingIntegrationTest {
 		return jdbcTemplate.queryForObject(
 				"INSERT INTO users (nickname, role, terms_agreed_at) VALUES (?, ?, now()) RETURNING user_id",
 				Long.class, nickname, role.name());
+	}
+
+	private Long insertVerifiedImage(Long uploaderId, Long listingId) {
+		return insertImage(uploaderId, listingId, "VERIFIED");
+	}
+
+	private void assertInvalidCreateImages(Long categoryId, String authorization, List<Long> imageIds,
+			int expectedStatus, String expectedCode) throws Exception {
+		Map<String, Object> body = createBody(categoryId);
+		body.put("imageIds", imageIds);
+		mockMvc.perform(json(post(LISTINGS), body).header("Authorization", authorization))
+				.andExpect(status().is(expectedStatus))
+				.andExpect(jsonPath("$.code").value(expectedCode));
+	}
+
+	private Long insertImage(Long uploaderId, Long listingId, String status) {
+		String objectKey = "listing-tests/" + UUID.randomUUID() + ".jpg";
+		return jdbcTemplate.queryForObject("""
+				INSERT INTO listing_images (listing_id, uploader_id, object_key, content_type, file_size, status)
+				VALUES (?, ?, ?, 'image/jpeg', 1024, ?) RETURNING image_id
+				""", Long.class, listingId, uploaderId, objectKey, status);
+	}
+
+	private String imageKey(Long imageId) {
+		return jdbcTemplate.queryForObject("SELECT object_key FROM listing_images WHERE image_id = ?",
+				String.class, imageId);
 	}
 
 	private Long categoryId(String name) {
