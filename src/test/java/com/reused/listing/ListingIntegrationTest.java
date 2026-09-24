@@ -2,6 +2,8 @@ package com.reused.listing;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -169,6 +171,209 @@ class ListingIntegrationTest {
 				.andExpect(status().isServiceUnavailable())
 				.andExpect(jsonPath("$.code").value("SERVICE_UNAVAILABLE"));
 		assertThat(jdbcTemplate.queryForObject("SELECT count(*) FROM listings", Long.class)).isEqualTo(1);
+	}
+
+	@Test
+	@DisplayName("작성자는 일부 필드만 수정할 수 있고 수정 응답은 조회수를 늘리지 않는다")
+	void updatePartialFieldsDoesNotCountAsView() throws Exception {
+		Long sellerId = insertUser("판매자", UserRole.USER);
+		Long originalCategoryId = categoryId("디지털기기");
+		Long nextCategoryId = categoryId("도서");
+		Long listingId = insertListing(sellerId, originalCategoryId, "수정 전 제목", 650000,
+				"ON_SALE", BASE_TIME);
+
+		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId),
+					Map.of("title", "수정한 제목", "price", 350000, "categoryId", nextCategoryId,
+							"imageIds", List.of()))
+					.header("Authorization", bearer(sellerId, UserRole.USER)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.listingId").value(listingId))
+				.andExpect(jsonPath("$.title").value("수정한 제목"))
+				.andExpect(jsonPath("$.description").value("수정 전 제목 설명"))
+				.andExpect(jsonPath("$.price").value(350000))
+				.andExpect(jsonPath("$.category.categoryId").value(nextCategoryId))
+				.andExpect(jsonPath("$.viewCount").value(0))
+				.andExpect(jsonPath("$.isMine").value(true));
+
+		Map<String, Object> row = jdbcTemplate.queryForMap(
+				"SELECT title, description, price, category_id, view_count, updated_at FROM listings WHERE listing_id = ?",
+				listingId);
+		assertThat(row.get("title")).isEqualTo("수정한 제목");
+		assertThat(row.get("description")).isEqualTo("수정 전 제목 설명");
+		assertThat(row.get("price")).isEqualTo(350000);
+		assertThat(((Number) row.get("category_id")).longValue()).isEqualTo(nextCategoryId);
+		assertThat(row.get("view_count")).isEqualTo(0);
+		assertThat(row.get("updated_at")).isNotNull();
+
+		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId),
+					Map.of("description", "새 설명", "itemCondition", "NEW", "tradeMethod", "DIRECT"))
+					.header("Authorization", bearer(sellerId, UserRole.USER)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.title").value("수정한 제목"))
+				.andExpect(jsonPath("$.description").value("새 설명"))
+				.andExpect(jsonPath("$.itemCondition").value("NEW"))
+				.andExpect(jsonPath("$.tradeMethod").value("DIRECT"))
+				.andExpect(jsonPath("$.viewCount").value(0));
+	}
+
+	@Test
+	@DisplayName("게시글 수정은 현재 활성 상태인 작성자만 허용한다")
+	void updateRequiresActiveOwner() throws Exception {
+		Long categoryId = categoryId("디지털기기");
+		Long sellerId = insertUser("판매자", UserRole.USER);
+		Long otherId = insertUser("다른회원", UserRole.USER);
+		Long adminId = insertUser("관리자", UserRole.ADMIN);
+		Long suspendedId = insertUser("정지회원", UserRole.USER);
+		Long listingId = insertListing(sellerId, categoryId, "판매중 상품", 100, "ON_SALE", BASE_TIME);
+		Long suspendedListingId = insertListing(suspendedId, categoryId, "정지회원 상품", 100,
+				"ON_SALE", BASE_TIME);
+		String tokenIssuedBeforeSuspension = bearer(suspendedId, UserRole.USER);
+		jdbcTemplate.update("UPDATE users SET status = 'SUSPENDED' WHERE user_id = ?", suspendedId);
+		Map<String, Object> body = Map.of("title", "변경된 제목");
+
+		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId), body))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId), body)
+					.header("Authorization", bearer(otherId, UserRole.USER)))
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.code").value("FORBIDDEN"));
+		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId), body)
+					.header("Authorization", bearer(adminId, UserRole.ADMIN)))
+				.andExpect(status().isForbidden());
+		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", suspendedListingId), body)
+					.header("Authorization", tokenIssuedBeforeSuspension))
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.code").value("USER_SUSPENDED"));
+		jdbcTemplate.update("UPDATE listings SET deleted_at = now() WHERE listing_id = ?", listingId);
+		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId), body)
+					.header("Authorization", bearer(sellerId, UserRole.USER)))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.code").value("NOT_FOUND"));
+	}
+
+	@Test
+	@DisplayName("수정 입력과 카테고리를 검증하고 이미지 연결이 불가능함을 명확히 알린다")
+	void updateValidatesFieldsAndImageAvailability() throws Exception {
+		Long sellerId = insertUser("판매자", UserRole.USER);
+		Long listingId = insertListing(sellerId, categoryId("디지털기기"), "원래 제목", 100,
+				"ON_SALE", BASE_TIME);
+		String authorization = bearer(sellerId, UserRole.USER);
+		List<Map<String, Object>> invalidBodies = List.of(
+				Map.of("title", " "),
+				Map.of("description", "  "),
+				Map.of("price", -1),
+				Map.of("itemCondition", "UNKNOWN"),
+				Map.of("tradeMethod", "UNKNOWN"),
+				Map.of("categoryId", -1),
+				Map.of("imageIds", List.of(1, 2, 3, 4, 5, 6)));
+		for (Map<String, Object> body : invalidBodies) {
+			mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId), body)
+					.header("Authorization", authorization))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
+		}
+		mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId),
+					Map.of("imageIds", List.of(7)))
+					.header("Authorization", authorization))
+				.andExpect(status().isServiceUnavailable())
+				.andExpect(jsonPath("$.code").value("SERVICE_UNAVAILABLE"));
+		Long inactiveCategoryId = categoryId("도서");
+		jdbcTemplate.update("UPDATE categories SET is_active = false WHERE category_id = ?", inactiveCategoryId);
+		try {
+			mockMvc.perform(json(patch(LISTINGS + "/{listingId}", listingId),
+						Map.of("categoryId", inactiveCategoryId))
+						.header("Authorization", authorization))
+					.andExpect(status().isBadRequest())
+					.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
+		}
+		finally {
+			jdbcTemplate.update("UPDATE categories SET is_active = true WHERE category_id = ?", inactiveCategoryId);
+		}
+		assertThat(jdbcTemplate.queryForObject(
+				"SELECT title FROM listings WHERE listing_id = ?", String.class, listingId)).isEqualTo("원래 제목");
+	}
+
+	@Test
+	@DisplayName("작성자의 삭제는 논리 삭제이며 완료된 과거 거래는 삭제를 막지 않는다")
+	void deleteSoftDeletesOwnedListing() throws Exception {
+		Long sellerId = insertUser("판매자", UserRole.USER);
+		Long buyerId = insertUser("구매자", UserRole.USER);
+		Long listingId = insertListing(sellerId, categoryId("디지털기기"), "삭제할 게시글", 100,
+				"COMPLETED", BASE_TIME);
+		insertCompletedTrade(listingId, sellerId, buyerId);
+
+		mockMvc.perform(delete(LISTINGS + "/{listingId}", listingId)
+					.header("Authorization", bearer(sellerId, UserRole.USER)))
+				.andExpect(status().isNoContent());
+
+		Map<String, Object> row = jdbcTemplate.queryForMap(
+				"SELECT deleted_at, deleted_by, updated_at FROM listings WHERE listing_id = ?", listingId);
+		assertThat(row.get("deleted_at")).isNotNull();
+		assertThat(((Number) row.get("deleted_by")).longValue()).isEqualTo(sellerId);
+		assertThat(row.get("updated_at")).isEqualTo(row.get("deleted_at"));
+		mockMvc.perform(get(LISTINGS))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.items.length()").value(0));
+		mockMvc.perform(get(LISTINGS + "/{listingId}", listingId))
+				.andExpect(status().isNotFound());
+	}
+
+	@Test
+	@DisplayName("요청 또는 승인 상태의 거래가 있으면 게시글 삭제는 409다")
+	void deleteRejectsActiveTrades() throws Exception {
+		Long sellerId = insertUser("판매자", UserRole.USER);
+		Long buyerId = insertUser("구매자", UserRole.USER);
+		Long categoryId = categoryId("디지털기기");
+		String authorization = bearer(sellerId, UserRole.USER);
+		for (String tradeStatus : List.of("REQUESTED", "ACCEPTED")) {
+			Long listingId = insertListing(sellerId, categoryId, tradeStatus + " 게시글", 100,
+					tradeStatus.equals("ACCEPTED") ? "RESERVED" : "ON_SALE", BASE_TIME);
+			jdbcTemplate.update("INSERT INTO trades (listing_id, seller_id, buyer_id, status) VALUES (?, ?, ?, ?)",
+					listingId, sellerId, buyerId, tradeStatus);
+
+			mockMvc.perform(delete(LISTINGS + "/{listingId}", listingId)
+						.header("Authorization", authorization))
+					.andExpect(status().isConflict())
+					.andExpect(jsonPath("$.code").value("CONFLICT"));
+			assertThat(jdbcTemplate.queryForObject(
+					"SELECT deleted_at FROM listings WHERE listing_id = ?", Timestamp.class, listingId)).isNull();
+		}
+	}
+
+	@Test
+	@DisplayName("게시글 삭제도 로그인·작성자·현재 계정 상태를 확인한다")
+	void deleteRequiresActiveOwner() throws Exception {
+		Long categoryId = categoryId("디지털기기");
+		Long sellerId = insertUser("판매자", UserRole.USER);
+		Long otherId = insertUser("다른회원", UserRole.USER);
+		Long adminId = insertUser("관리자", UserRole.ADMIN);
+		Long suspendedId = insertUser("정지회원", UserRole.USER);
+		Long listingId = insertListing(sellerId, categoryId, "판매중 상품", 100, "ON_SALE", BASE_TIME);
+		Long suspendedListingId = insertListing(suspendedId, categoryId, "정지회원 상품", 100,
+				"ON_SALE", BASE_TIME);
+		String tokenIssuedBeforeSuspension = bearer(suspendedId, UserRole.USER);
+		jdbcTemplate.update("UPDATE users SET status = 'SUSPENDED' WHERE user_id = ?", suspendedId);
+
+		mockMvc.perform(delete(LISTINGS + "/{listingId}", listingId))
+				.andExpect(status().isUnauthorized());
+		mockMvc.perform(delete(LISTINGS + "/{listingId}", listingId)
+					.header("Authorization", bearer(otherId, UserRole.USER)))
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.code").value("FORBIDDEN"));
+		mockMvc.perform(delete(LISTINGS + "/{listingId}", listingId)
+					.header("Authorization", bearer(adminId, UserRole.ADMIN)))
+				.andExpect(status().isForbidden());
+		mockMvc.perform(delete(LISTINGS + "/{listingId}", suspendedListingId)
+					.header("Authorization", tokenIssuedBeforeSuspension))
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.code").value("USER_SUSPENDED"));
+		mockMvc.perform(delete(LISTINGS + "/{listingId}", listingId)
+					.header("Authorization", bearer(sellerId, UserRole.USER)))
+				.andExpect(status().isNoContent());
+		mockMvc.perform(delete(LISTINGS + "/{listingId}", listingId)
+					.header("Authorization", bearer(sellerId, UserRole.USER)))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.code").value("NOT_FOUND"));
 	}
 
 	@Test

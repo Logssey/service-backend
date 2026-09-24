@@ -93,4 +93,34 @@ public class Listing {
 		return new Listing(sellerId, categoryId, title, description, price, itemCondition, tradeMethod);
 	}
 
+	public void update(String title, String description, Integer price, ItemCondition itemCondition,
+			TradeMethod tradeMethod, Long categoryId) {
+		if (title != null) {
+			this.title = title;
+		}
+		if (description != null) {
+			this.description = description;
+		}
+		if (price != null) {
+			this.price = price;
+		}
+		if (itemCondition != null) {
+			this.itemCondition = itemCondition;
+		}
+		if (tradeMethod != null) {
+			this.tradeMethod = tradeMethod;
+		}
+		if (categoryId != null) {
+			this.categoryId = categoryId;
+		}
+		this.updatedAt = Instant.now();
+	}
+
+	public void softDelete(Long deletedBy) {
+		Instant now = Instant.now();
+		this.deletedAt = now;
+		this.deletedBy = deletedBy;
+		this.updatedAt = now;
+	}
+
 }
