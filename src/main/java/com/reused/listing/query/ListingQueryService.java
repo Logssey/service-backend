@@ -52,6 +52,12 @@ public class ListingQueryService {
 				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
 	}
 
+	/** Returns the same detail projection after a write without counting it as a view. */
+	public ListingDetailResponse getListingAfterUpdate(Long id, Long ownerId) {
+		return repository.findDetail(id, ownerId)
+				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+	}
+
 	private static ListingSearchRequest validateAndNormalize(ListingSearchRequest request) {
 		if (request == null) {
 			request = new ListingSearchRequest(null, null, null, null, null, null, null, null);

@@ -4,6 +4,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -14,6 +15,7 @@ import com.reused.common.security.AuthPrincipal;
 import com.reused.common.security.AuthUser;
 import com.reused.common.security.CurrentUserProvider;
 import com.reused.listing.dto.request.ListingCreateRequest;
+import com.reused.listing.dto.request.ListingUpdateRequest;
 import com.reused.listing.dto.response.ListingCreateResponse;
 import com.reused.listing.query.CursorPageResponse;
 import com.reused.listing.query.ListingDetailResponse;
@@ -21,6 +23,7 @@ import com.reused.listing.query.ListingQueryService;
 import com.reused.listing.query.ListingSearchRequest;
 import com.reused.listing.query.ListingSummaryResponse;
 import com.reused.listing.service.ListingCreateService;
+import com.reused.listing.service.ListingUpdateService;
 
 import jakarta.validation.Valid;
 
@@ -29,12 +32,15 @@ import jakarta.validation.Valid;
 public class ListingController {
 
 	private final ListingCreateService listingCreateService;
+	private final ListingUpdateService listingUpdateService;
 	private final ListingQueryService listingQueryService;
 	private final CurrentUserProvider currentUserProvider;
 
-	public ListingController(ListingCreateService listingCreateService, ListingQueryService listingQueryService,
+	public ListingController(ListingCreateService listingCreateService, ListingUpdateService listingUpdateService,
+			ListingQueryService listingQueryService,
 			CurrentUserProvider currentUserProvider) {
 		this.listingCreateService = listingCreateService;
+		this.listingUpdateService = listingUpdateService;
 		this.listingQueryService = listingQueryService;
 		this.currentUserProvider = currentUserProvider;
 	}
@@ -44,6 +50,12 @@ public class ListingController {
 	public ListingCreateResponse create(@AuthUser AuthPrincipal principal,
 			@Valid @RequestBody ListingCreateRequest request) {
 		return listingCreateService.create(principal, request);
+	}
+
+	@PatchMapping("/{listingId}")
+	public ListingDetailResponse update(@AuthUser AuthPrincipal principal, @PathVariable Long listingId,
+			@Valid @RequestBody ListingUpdateRequest request) {
+		return listingUpdateService.update(principal, listingId, request);
 	}
 
 	@GetMapping
