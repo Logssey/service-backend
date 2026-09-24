@@ -7,6 +7,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -42,6 +43,12 @@ public class GlobalExceptionHandler {
 		log.debug("요청 본문을 읽을 수 없음", e);
 		return ResponseEntity.status(ErrorCode.INVALID_INPUT.status())
 				.body(ErrorResponse.of(ErrorCode.INVALID_INPUT, "요청 본문 형식이 올바르지 않습니다."));
+	}
+
+	@ExceptionHandler(MethodArgumentTypeMismatchException.class)
+	public ResponseEntity<ErrorResponse> handleQueryTypeMismatch(MethodArgumentTypeMismatchException e) {
+		return ResponseEntity.status(ErrorCode.INVALID_INPUT.status())
+				.body(ErrorResponse.of(ErrorCode.INVALID_INPUT));
 	}
 
 	@ExceptionHandler(Exception.class)

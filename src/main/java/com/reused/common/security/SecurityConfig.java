@@ -38,6 +38,7 @@ public class SecurityConfig {
 				.logout(AbstractHttpConfigurer::disable)
 				.authorizeHttpRequests(auth -> auth
 						.requestMatchers(HttpMethod.GET, "/api/v1/categories").permitAll()
+						.requestMatchers(HttpMethod.GET, "/api/v1/listings", "/api/v1/listings/{listingId}").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/users/nickname/check").permitAll()
 						// 인증 진입점. 로그아웃과 이메일 소유 확인만 USER 권한이 필요하다.
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/oauth/*").permitAll()
