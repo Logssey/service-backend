@@ -2,7 +2,6 @@ package com.reused.auth.controller;
 
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -67,11 +66,7 @@ public class AuthController {
 	}
 
 	private ResponseEntity.BodyBuilder withRefreshCookie(ResponseEntity.BodyBuilder builder, String refreshToken) {
-		if (refreshToken == null) {
-			return builder;
-		}
-		ResponseCookie cookie = cookieFactory.create(refreshToken);
-		return builder.header(HttpHeaders.SET_COOKIE, cookie.toString());
+		return RefreshCookies.attach(builder, cookieFactory, refreshToken);
 	}
 
 }

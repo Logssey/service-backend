@@ -15,8 +15,10 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 /**
- * 소셜 로그인으로 가입한 회원. 컬럼 구성은 schema/001_init.sql의 users 테이블과 1:1로 맞춘다.
- * 비밀번호 컬럼이 없는 것은 의도된 설계다(ADR-004, 비밀번호 인증은 범위 밖).
+ * 회원. 컬럼 구성은 schema/001_init.sql의 users 테이블과 1:1로 맞춘다.
+ *
+ * <p>인증 수단(카카오 회원번호, 이메일·비밀번호)은 이 엔티티에 없다.
+ * {@link UserIdentity}로 분리되어 있으며 users는 사람만 표현한다(ADR-017).
  */
 @Entity
 @Table(name = "users")
@@ -28,13 +30,6 @@ public class User {
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	@Column(name = "user_id")
 	private Long id;
-
-	@Enumerated(EnumType.STRING)
-	@Column(nullable = false, length = 20)
-	private AuthProvider provider;
-
-	@Column(name = "provider_user_id", nullable = false, length = 255)
-	private String providerUserId;
 
 	@Column(nullable = false, length = 20)
 	private String nickname;
@@ -68,9 +63,7 @@ public class User {
 	@Column(name = "withdrawn_at")
 	private Instant withdrawnAt;
 
-	private User(AuthProvider provider, String providerUserId, String nickname, Instant termsAgreedAt) {
-		this.provider = provider;
-		this.providerUserId = providerUserId;
+	private User(String nickname, Instant termsAgreedAt) {
 		this.nickname = nickname;
 		this.role = UserRole.USER;
 		this.status = UserStatus.ACTIVE;
@@ -78,8 +71,8 @@ public class User {
 		this.createdAt = Instant.now();
 	}
 
-	public static User signUp(AuthProvider provider, String providerUserId, String nickname, Instant termsAgreedAt) {
-		return new User(provider, providerUserId, nickname, termsAgreedAt);
+	public static User signUp(String nickname, Instant termsAgreedAt) {
+		return new User(nickname, termsAgreedAt);
 	}
 
 	public boolean isWithdrawn() {

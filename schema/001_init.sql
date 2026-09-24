@@ -36,6 +36,7 @@
 -- DROP TABLE IF EXISTS listings CASCADE;
 -- DROP TABLE IF EXISTS categories CASCADE;
 -- DROP TABLE IF EXISTS user_status_histories CASCADE;
+-- DROP TABLE IF EXISTS user_identities CASCADE;
 -- DROP TABLE IF EXISTS users CASCADE;
 
 -- ------------------------------------------------------------
@@ -43,8 +44,6 @@
 -- ------------------------------------------------------------
 CREATE TABLE users (
     user_id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    provider            VARCHAR(20)  NOT NULL,
-    provider_user_id    VARCHAR(255) NOT NULL,
     nickname            VARCHAR(20)  NOT NULL,
     profile_image_url   TEXT,
     bio                 VARCHAR(200),
@@ -56,21 +55,52 @@ CREATE TABLE users (
     updated_at          TIMESTAMPTZ,
     withdrawn_at        TIMESTAMPTZ,
 
-    CONSTRAINT uq_users_provider_identity UNIQUE (provider, provider_user_id),
     CONSTRAINT uq_users_nickname UNIQUE (nickname),
-    CONSTRAINT ck_users_provider CHECK (provider IN ('KAKAO')),
     CONSTRAINT ck_users_role CHECK (role IN ('USER', 'ADMIN')),
     CONSTRAINT ck_users_status CHECK (status IN ('ACTIVE', 'SUSPENDED', 'WITHDRAWN'))
 );
 
-COMMENT ON TABLE  users IS '소셜 로그인으로 가입한 회원';
-COMMENT ON COLUMN users.provider_user_id IS '카카오 회원번호. 탈퇴 시 단방향 해시로 대체';
+COMMENT ON TABLE  users IS '회원. 인증 수단은 user_identities에 분리해 둔다 (ADR-017)';
 COMMENT ON COLUMN users.nickname IS '중복 불허. 탈퇴 시 "탈퇴회원#{user_id}"로 대체';
 COMMENT ON COLUMN users.suspended_until IS '이용정지 종료 시각. NULL이면 무기한';
 COMMENT ON COLUMN users.withdrawn_at IS '탈퇴 시각. 값이 있으면 로그인 차단';
 
 -- ------------------------------------------------------------
--- 2. user_status_histories (회원 상태·역할 변경 이력)
+-- 2. user_identities (인증 수단)
+-- ------------------------------------------------------------
+CREATE TABLE user_identities (
+    identity_id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id             BIGINT       NOT NULL,
+    provider            VARCHAR(20)  NOT NULL,
+    provider_user_id    VARCHAR(255) NOT NULL,
+    email               VARCHAR(254),
+    password_hash       VARCHAR(255),
+    email_verified_at   TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+
+    CONSTRAINT uq_user_identities_provider_identity UNIQUE (provider, provider_user_id),
+    CONSTRAINT uq_user_identities_user_provider UNIQUE (user_id, provider),
+    CONSTRAINT ck_user_identities_provider CHECK (provider IN ('KAKAO', 'LOCAL')),
+    CONSTRAINT ck_user_identities_local_email CHECK (
+        provider <> 'LOCAL' OR email IS NOT NULL),
+    CONSTRAINT ck_user_identities_social_credential CHECK (
+        provider = 'LOCAL' OR (email IS NULL AND password_hash IS NULL)),
+    CONSTRAINT fk_user_identities_user
+        FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE RESTRICT
+);
+
+-- 이메일은 LOCAL 범위에서만 유일하다. 이메일 로그인 조회 인덱스를 겸한다.
+CREATE UNIQUE INDEX uq_user_identities_email_local
+    ON user_identities (email) WHERE provider = 'LOCAL';
+
+COMMENT ON TABLE  user_identities IS '인증 수단. 구조상 회원당 복수 행이 가능하나 1차 릴리스는 애플리케이션이 1개로 제한한다 (ADR-017). 탈퇴 시 행을 삭제한다 (ADR-018)';
+COMMENT ON COLUMN user_identities.provider_user_id IS 'KAKAO는 회원번호, LOCAL은 서버 발급 UUID';
+COMMENT ON COLUMN user_identities.email IS 'LOCAL 필수. LOCAL 범위에서만 유일';
+COMMENT ON COLUMN user_identities.password_hash IS 'LOCAL 필수. 고유 Salt 적응형 단방향 해시';
+COMMENT ON COLUMN user_identities.email_verified_at IS '이메일 소유 확인 시각. NULL이면 미인증';
+
+-- ------------------------------------------------------------
+-- 3. user_status_histories (회원 상태·역할 변경 이력)
 -- ------------------------------------------------------------
 CREATE TABLE user_status_histories (
     history_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -93,7 +123,7 @@ COMMENT ON TABLE  user_status_histories IS '회원 상태 및 역할 변경 이�
 COMMENT ON COLUMN user_status_histories.changed_by IS '시스템 처리(탈퇴 등) 시 NULL';
 
 -- ------------------------------------------------------------
--- 3. categories (카테고리)
+-- 4. categories (카테고리)
 -- ------------------------------------------------------------
 CREATE TABLE categories (
     category_id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -107,7 +137,7 @@ CREATE TABLE categories (
 COMMENT ON TABLE categories IS '고정 목록. 사용자가 추가할 수 없음';
 
 -- ------------------------------------------------------------
--- 4. listings (중고거래 게시글)
+-- 5. listings (중고거래 게시글)
 -- ------------------------------------------------------------
 CREATE TABLE listings (
     listing_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -154,7 +184,7 @@ CREATE INDEX idx_listings_category
     ON listings (category_id);
 
 -- ------------------------------------------------------------
--- 5. listing_images (게시글 이미지)
+-- 6. listing_images (게시글 이미지)
 -- ------------------------------------------------------------
 CREATE TABLE listing_images (
     image_id        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -191,7 +221,7 @@ CREATE INDEX idx_listing_images_listing
     ON listing_images (listing_id);
 
 -- ------------------------------------------------------------
--- 6. wishes (관심 상품)
+-- 7. wishes (관심 상품)
 -- ------------------------------------------------------------
 CREATE TABLE wishes (
     wish_id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -212,7 +242,7 @@ CREATE INDEX idx_wishes_user
     ON wishes (user_id);
 
 -- ------------------------------------------------------------
--- 7. trades (거래)
+-- 8. trades (거래)
 -- ------------------------------------------------------------
 CREATE TABLE trades (
     trade_id        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -263,7 +293,7 @@ CREATE INDEX idx_trades_seller
     ON trades (seller_id);
 
 -- ------------------------------------------------------------
--- 8. trade_status_histories (거래 상태 이력)
+-- 9. trade_status_histories (거래 상태 이력)
 -- ------------------------------------------------------------
 CREATE TABLE trade_status_histories (
     history_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -284,7 +314,7 @@ COMMENT ON TABLE  trade_status_histories IS '거래 상태 전이 이력. 덮어
 COMMENT ON COLUMN trade_status_histories.before_status IS '최초 생성 시 NULL';
 
 -- ------------------------------------------------------------
--- 9. chat_rooms (채팅방)
+-- 10. chat_rooms (채팅방)
 -- ------------------------------------------------------------
 CREATE TABLE chat_rooms (
     chat_room_id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -318,7 +348,7 @@ CREATE INDEX idx_chat_rooms_buyer
     ON chat_rooms (buyer_id);
 
 -- ------------------------------------------------------------
--- 10. messages (메시지)
+-- 11. messages (메시지)
 -- ------------------------------------------------------------
 CREATE TABLE messages (
     message_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -343,7 +373,7 @@ CREATE INDEX idx_messages_room
     ON messages (chat_room_id);
 
 -- ------------------------------------------------------------
--- 11. reviews (후기)
+-- 12. reviews (후기)
 -- ------------------------------------------------------------
 CREATE TABLE reviews (
     review_id       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -373,7 +403,7 @@ CREATE INDEX idx_reviews_reviewee
     ON reviews (reviewee_id);
 
 -- ------------------------------------------------------------
--- 12. community_posts (커뮤니티 게시글)
+-- 13. community_posts (커뮤니티 게시글)
 -- ------------------------------------------------------------
 CREATE TABLE community_posts (
     post_id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -424,7 +454,7 @@ CREATE INDEX idx_community_posts_category_latest
     WHERE deleted_at IS NULL AND status = 'PUBLISHED';
 
 -- ------------------------------------------------------------
--- 13. community_comments (커뮤니티 댓글)
+-- 14. community_comments (커뮤니티 댓글)
 -- ------------------------------------------------------------
 CREATE TABLE community_comments (
     comment_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -460,7 +490,7 @@ CREATE INDEX idx_community_comments_author
     ON community_comments (author_id);
 
 -- ------------------------------------------------------------
--- 14. reports (신고)
+-- 15. reports (신고)
 -- ------------------------------------------------------------
 CREATE TABLE reports (
     report_id       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -494,7 +524,7 @@ CREATE UNIQUE INDEX uq_reports_pending_duplicate
     WHERE status IN ('RECEIVED', 'IN_REVIEW');
 
 -- ------------------------------------------------------------
--- 15. blocks (사용자 차단)
+-- 16. blocks (사용자 차단)
 -- ------------------------------------------------------------
 CREATE TABLE blocks (
     block_id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -513,7 +543,7 @@ CREATE TABLE blocks (
 COMMENT ON TABLE blocks IS '단방향 차단. 차단당한 쪽은 차단 사실을 알 수 없음';
 
 -- ------------------------------------------------------------
--- 16. notifications (알림)
+-- 17. notifications (알림)
 -- ------------------------------------------------------------
 CREATE TABLE notifications (
     notification_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -537,7 +567,7 @@ CREATE INDEX idx_notifications_user
     ON notifications (user_id);
 
 -- ------------------------------------------------------------
--- 17. notification_settings (알림 수신 설정)
+-- 18. notification_settings (알림 수신 설정)
 -- ------------------------------------------------------------
 CREATE TABLE notification_settings (
     user_id         BIGINT      PRIMARY KEY,
@@ -555,7 +585,7 @@ CREATE TABLE notification_settings (
 COMMENT ON TABLE notification_settings IS '유형별 알림 수신 설정. 회원가입 시 기본값으로 1행 생성';
 
 -- ------------------------------------------------------------
--- 18. notices (공지사항)
+-- 19. notices (공지사항)
 -- ------------------------------------------------------------
 CREATE TABLE notices (
     notice_id   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -574,7 +604,7 @@ CREATE TABLE notices (
 COMMENT ON TABLE notices IS '관리자 전용 공지사항';
 
 -- ------------------------------------------------------------
--- 19. audit_logs (감사 로그)
+-- 20. audit_logs (감사 로그)
 -- ------------------------------------------------------------
 CREATE TABLE audit_logs (
     audit_log_id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

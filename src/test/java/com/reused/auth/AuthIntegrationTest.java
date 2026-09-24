@@ -57,7 +57,8 @@ class AuthIntegrationTest {
 
 	@BeforeEach
 	void resetState() {
-		jdbcTemplate.execute("TRUNCATE notification_settings, user_status_histories, users RESTART IDENTITY CASCADE");
+		jdbcTemplate.execute(
+				"TRUNCATE notification_settings, user_status_histories, user_identities, users RESTART IDENTITY CASCADE");
 		redisTemplate.execute((org.springframework.data.redis.core.RedisCallback<Void>) connection -> {
 			connection.serverCommands().flushDb();
 			return null;
@@ -77,8 +78,8 @@ class AuthIntegrationTest {
 	}
 
 	@Test
-	@DisplayName("가입하면 Access Token과 Refresh 쿠키를 받고 알림 설정이 함께 만들어진다")
-	void signupCreatesUserAndNotificationSettings() throws Exception {
+	@DisplayName("가입하면 Access Token과 Refresh 쿠키를 받고 KAKAO 인증 수단과 알림 설정이 함께 만들어진다")
+	void signupCreatesUserIdentityAndNotificationSettings() throws Exception {
 		String signupToken = signupTokenFromLogin();
 
 		MvcResult result = mockMvc.perform(signup(signupToken, "재현"))
@@ -96,6 +97,14 @@ class AuthIntegrationTest {
 		Long settingsCount = jdbcTemplate.queryForObject("SELECT count(*) FROM notification_settings", Long.class);
 		assertThat(userCount).isEqualTo(1);
 		assertThat(settingsCount).isEqualTo(1);
+
+		// 인증 수단은 users가 아니라 user_identities에 저장된다(ADR-017). 소셜 계정은 이메일·비밀번호가 없다.
+		java.util.Map<String, Object> identity = jdbcTemplate.queryForMap(
+				"SELECT provider, provider_user_id, email, password_hash FROM user_identities");
+		assertThat(identity.get("provider")).isEqualTo("KAKAO");
+		assertThat(identity.get("provider_user_id")).isEqualTo(KAKAO_USER_ID);
+		assertThat(identity.get("email")).isNull();
+		assertThat(identity.get("password_hash")).isNull();
 	}
 
 	@Test
