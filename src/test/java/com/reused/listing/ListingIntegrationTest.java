@@ -31,7 +31,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import com.reused.TestcontainersConfiguration;
-import com.reused.auth.client.KakaoOAuthClient;
+import com.reused.auth.client.OAuthProviderClient;
 import com.reused.auth.mail.AuthMailSender;
 import com.reused.auth.token.JwtTokenProvider;
 import com.reused.user.entity.UserRole;
@@ -57,7 +57,7 @@ class ListingIntegrationTest {
 	private JwtTokenProvider tokenProvider;
 
 	@MockitoBean
-	private KakaoOAuthClient kakaoOAuthClient;
+	private OAuthProviderClient kakaoOAuthClient;
 
 	@MockitoBean
 	private AuthMailSender mailSender;

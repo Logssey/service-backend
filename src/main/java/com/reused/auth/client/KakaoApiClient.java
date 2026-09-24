@@ -15,6 +15,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.reused.auth.config.KakaoProperties;
 import com.reused.common.error.BusinessException;
 import com.reused.common.error.ErrorCode;
+import com.reused.user.entity.AuthProvider;
 
 /**
  * 카카오 OAuth 실제 연동.
@@ -24,7 +25,7 @@ import com.reused.common.error.ErrorCode;
  * {@code EXTERNAL_SERVICE_ERROR}다. 카카오 응답 본문은 사용자에게 그대로 전달하지 않는다.
  */
 @Component
-public class KakaoApiClient implements KakaoOAuthClient {
+public class KakaoApiClient implements OAuthProviderClient {
 
 	private static final Logger log = LoggerFactory.getLogger(KakaoApiClient.class);
 
@@ -34,6 +35,11 @@ public class KakaoApiClient implements KakaoOAuthClient {
 	public KakaoApiClient(RestClient.Builder builder, KakaoProperties properties) {
 		this.restClient = builder.build();
 		this.properties = properties;
+	}
+
+	@Override
+	public AuthProvider provider() {
+		return AuthProvider.KAKAO;
 	}
 
 	@Override

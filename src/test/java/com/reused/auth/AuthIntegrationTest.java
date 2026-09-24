@@ -3,6 +3,8 @@ package com.reused.auth;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -12,6 +14,9 @@ import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -27,7 +32,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import com.reused.TestcontainersConfiguration;
-import com.reused.auth.client.KakaoOAuthClient;
+import com.reused.auth.client.OAuthProviderClient;
+import com.reused.user.entity.AuthProvider;
 
 /**
  * 인증 흐름 통합 테스트. 실제 Postgres·Redis 컨테이너 위에서 돌고, 외부 카카오 호출만 대역으로 바꾼다.
@@ -53,7 +59,7 @@ class AuthIntegrationTest {
 	private StringRedisTemplate redisTemplate;
 
 	@MockitoBean
-	private KakaoOAuthClient kakaoOAuthClient;
+	private OAuthProviderClient kakaoOAuthClient;
 
 	@BeforeEach
 	void resetState() {
@@ -63,13 +69,14 @@ class AuthIntegrationTest {
 			connection.serverCommands().flushDb();
 			return null;
 		});
+		given(kakaoOAuthClient.provider()).willReturn(AuthProvider.KAKAO);
 		given(kakaoOAuthClient.fetchProviderUserId(any(), any())).willReturn(KAKAO_USER_ID);
 	}
 
 	@Test
 	@DisplayName("가입하지 않은 카카오 계정은 SIGNUP_REQUIRED와 signupToken을 받는다")
 	void newUserGetsSignupToken() throws Exception {
-		mockMvc.perform(kakaoLogin())
+		mockMvc.perform(oauthLogin())
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.status").value("SIGNUP_REQUIRED"))
 				.andExpect(jsonPath("$.accessToken").doesNotExist())
@@ -112,7 +119,7 @@ class AuthIntegrationTest {
 	void existingUserLogsIn() throws Exception {
 		signupNewUser("재현");
 
-		mockMvc.perform(kakaoLogin())
+		mockMvc.perform(oauthLogin())
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.status").value("LOGIN"))
 				.andExpect(jsonPath("$.accessToken").isNotEmpty())
@@ -142,13 +149,26 @@ class AuthIntegrationTest {
 				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
 	}
 
-	@Test
-	@DisplayName("약관에 동의하지 않으면 400이다")
-	void termsMustBeAgreed() throws Exception {
+	@ParameterizedTest(name = "이용약관={0}, 개인정보={1}")
+	@CsvSource({ "false, true", "true, false" })
+	@DisplayName("필수 약관 2건 중 하나라도 동의하지 않으면 400이다")
+	void bothTermsMustBeAgreed(boolean termsOfService, boolean privacyPolicy) throws Exception {
 		String signupToken = signupTokenFromLogin();
-		String body = objectMapper.writeValueAsString(
-				new java.util.LinkedHashMap<>(java.util.Map.of(
-						"signupToken", signupToken, "nickname", "재현", "termsAgreed", false)));
+		String body = objectMapper.writeValueAsString(java.util.Map.of(
+				"signupToken", signupToken, "nickname", "재현",
+				"termsOfServiceAgreed", termsOfService, "privacyPolicyAgreed", privacyPolicy));
+
+		mockMvc.perform(post("/api/v1/auth/signup").contentType(MediaType.APPLICATION_JSON).content(body))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
+	}
+
+	@Test
+	@DisplayName("예전 단일 필드 termsAgreed만 보내면 새 약관 필드가 빠진 요청이므로 400이다")
+	void legacyTermsFieldIsNotAccepted() throws Exception {
+		String signupToken = signupTokenFromLogin();
+		String body = objectMapper.writeValueAsString(java.util.Map.of(
+				"signupToken", signupToken, "nickname", "재현", "termsAgreed", true));
 
 		mockMvc.perform(post("/api/v1/auth/signup").contentType(MediaType.APPLICATION_JSON).content(body))
 				.andExpect(status().isBadRequest())
@@ -171,9 +191,20 @@ class AuthIntegrationTest {
 		signupNewUser("재현");
 		jdbcTemplate.update("UPDATE users SET status = 'SUSPENDED'");
 
-		mockMvc.perform(kakaoLogin())
+		mockMvc.perform(oauthLogin())
 				.andExpect(status().isForbidden())
 				.andExpect(jsonPath("$.code").value("USER_SUSPENDED"));
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = { "google", "local", "KAKAO" })
+	@DisplayName("지원하지 않는 provider는 404 NOT_FOUND이고 제공자 API를 호출하지 않는다")
+	void unsupportedProviderIsNotFound(String provider) throws Exception {
+		mockMvc.perform(oauthLogin(provider))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.code").value("NOT_FOUND"));
+
+		verify(kakaoOAuthClient, never()).fetchProviderUserId(any(), any());
 	}
 
 	@Test
@@ -259,21 +290,27 @@ class AuthIntegrationTest {
 
 	// --- helpers ---
 
-	private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder kakaoLogin() throws Exception {
+	private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder oauthLogin() throws Exception {
+		return oauthLogin("kakao");
+	}
+
+	private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder oauthLogin(String provider)
+			throws Exception {
 		String body = objectMapper.writeValueAsString(
 				java.util.Map.of("code", "auth-code", "redirectUri", "https://reused.app/oauth/callback"));
-		return post("/api/v1/auth/kakao").contentType(MediaType.APPLICATION_JSON).content(body);
+		return post("/api/v1/auth/oauth/{provider}", provider).contentType(MediaType.APPLICATION_JSON).content(body);
 	}
 
 	private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder signup(
 			String signupToken, String nickname) throws Exception {
 		String body = objectMapper.writeValueAsString(
-				java.util.Map.of("signupToken", signupToken, "nickname", nickname, "termsAgreed", true));
+				java.util.Map.of("signupToken", signupToken, "nickname", nickname,
+						"termsOfServiceAgreed", true, "privacyPolicyAgreed", true));
 		return post("/api/v1/auth/signup").contentType(MediaType.APPLICATION_JSON).content(body);
 	}
 
 	private String signupTokenFromLogin() throws Exception {
-		MvcResult result = mockMvc.perform(kakaoLogin()).andExpect(status().isOk()).andReturn();
+		MvcResult result = mockMvc.perform(oauthLogin()).andExpect(status().isOk()).andReturn();
 		JsonNode json = objectMapper.readTree(result.getResponse().getContentAsString());
 		return json.get("signupToken").asString();
 	}

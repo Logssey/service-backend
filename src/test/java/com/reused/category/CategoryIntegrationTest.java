@@ -18,7 +18,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.reused.TestcontainersConfiguration;
-import com.reused.auth.client.KakaoOAuthClient;
+import com.reused.auth.client.OAuthProviderClient;
 
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -32,7 +32,7 @@ class CategoryIntegrationTest {
 	private JdbcTemplate jdbcTemplate;
 
 	@MockitoBean
-	private KakaoOAuthClient kakaoOAuthClient;
+	private OAuthProviderClient kakaoOAuthClient;
 
 	@BeforeEach
 	void setUp() {

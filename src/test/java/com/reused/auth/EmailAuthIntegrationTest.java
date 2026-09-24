@@ -38,8 +38,9 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import com.reused.TestcontainersConfiguration;
-import com.reused.auth.client.KakaoOAuthClient;
+import com.reused.auth.client.OAuthProviderClient;
 import com.reused.auth.mail.AuthMailSender;
+import com.reused.user.entity.AuthProvider;
 
 /**
  * 이메일 계정 인증 통합 테스트. 실제 Postgres·Redis 위에서 돌고, 메일 발송과 카카오 호출만 대역으로 바꾼다.
@@ -71,7 +72,7 @@ class EmailAuthIntegrationTest {
 	private AuthMailSender mailSender;
 
 	@MockitoBean
-	private KakaoOAuthClient kakaoOAuthClient;
+	private OAuthProviderClient kakaoOAuthClient;
 
 	@BeforeEach
 	void resetState() {
@@ -411,14 +412,16 @@ class EmailAuthIntegrationTest {
 	}
 
 	private String signupKakaoUser() throws Exception {
+		given(kakaoOAuthClient.provider()).willReturn(AuthProvider.KAKAO);
 		given(kakaoOAuthClient.fetchProviderUserId(any(), any())).willReturn("1234567890");
-		MvcResult loginResult = mockMvc.perform(json(post("/api/v1/auth/kakao"),
+		MvcResult loginResult = mockMvc.perform(json(post("/api/v1/auth/oauth/kakao"),
 						Map.of("code", "auth-code", "redirectUri", "https://reused.app/oauth/callback")))
 				.andExpect(status().isOk()).andReturn();
 		String signupToken = objectMapper.readTree(loginResult.getResponse().getContentAsString())
 				.get("signupToken").asString();
 		MvcResult signupResult = mockMvc.perform(json(post("/api/v1/auth/signup"),
-						Map.of("signupToken", signupToken, "nickname", "카카오유저", "termsAgreed", true)))
+						Map.of("signupToken", signupToken, "nickname", "카카오유저",
+								"termsOfServiceAgreed", true, "privacyPolicyAgreed", true)))
 				.andExpect(status().isCreated()).andReturn();
 		return objectMapper.readTree(signupResult.getResponse().getContentAsString()).get("accessToken").asString();
 	}

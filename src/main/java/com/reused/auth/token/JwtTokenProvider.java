@@ -18,6 +18,7 @@ import org.springframework.stereotype.Component;
 
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import com.reused.auth.config.AuthProperties;
+import com.reused.user.entity.AuthProvider;
 import com.reused.user.entity.UserRole;
 
 /**
@@ -34,6 +35,7 @@ public class JwtTokenProvider {
 
 	static final String CLAIM_TYPE = "typ";
 	static final String CLAIM_ROLE = "role";
+	static final String CLAIM_PROVIDER = "provider";
 
 	private static final String TYPE_ACCESS = "access";
 	private static final String TYPE_SIGNUP = "signup";
@@ -66,13 +68,14 @@ public class JwtTokenProvider {
 
 	/**
 	 * 인가 코드는 일회용이라 온보딩 중 만료되면 복구할 수 없다.
-	 * 그래서 카카오 회원번호를 담은 단기 토큰을 따로 발급한다(카카오 로그인 명세).
+	 * 그래서 제공자와 제공자 회원번호를 담은 단기 토큰을 따로 발급한다(소셜 로그인 명세).
 	 */
-	public String issueSignupToken(String providerUserId) {
+	public String issueSignupToken(AuthProvider provider, String providerUserId) {
 		Instant now = Instant.now();
 		JwtClaimsSet claims = JwtClaimsSet.builder()
 				.subject(providerUserId)
 				.claim(CLAIM_TYPE, TYPE_SIGNUP)
+				.claim(CLAIM_PROVIDER, provider.name())
 				.issuedAt(now)
 				.expiresAt(now.plus(properties.signupTokenTtl()))
 				.build();
@@ -90,10 +93,21 @@ public class JwtTokenProvider {
 	}
 
 	/**
-	 * @return signupToken에 담긴 카카오 회원번호
+	 * @return signupToken에 담긴 제공자와 제공자 회원번호
 	 */
-	public String parseSignupToken(String token) {
-		return decodeAs(token, TYPE_SIGNUP).getSubject();
+	public SignupTokenClaims parseSignupToken(String token) {
+		Jwt jwt = decodeAs(token, TYPE_SIGNUP);
+		AuthProvider provider;
+		try {
+			provider = AuthProvider.valueOf(jwt.getClaimAsString(CLAIM_PROVIDER));
+		}
+		catch (IllegalArgumentException | NullPointerException e) {
+			throw new InvalidTokenException("토큰의 제공자 정보가 올바르지 않습니다.", e);
+		}
+		if (provider == AuthProvider.LOCAL) {
+			throw new InvalidTokenException("토큰의 제공자 정보가 올바르지 않습니다.");
+		}
+		return new SignupTokenClaims(provider, jwt.getSubject());
 	}
 
 	private Jwt decodeAs(String token, String expectedType) {
@@ -116,6 +130,9 @@ public class JwtTokenProvider {
 	}
 
 	public record AccessTokenClaims(Long userId, UserRole role) {
+	}
+
+	public record SignupTokenClaims(AuthProvider provider, String providerUserId) {
 	}
 
 }
