@@ -3,9 +3,11 @@ package com.reused.common.error;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -29,6 +31,12 @@ public class GlobalExceptionHandler {
 				.orElse(ErrorCode.INVALID_INPUT.defaultMessage());
 		return ResponseEntity.status(ErrorCode.INVALID_INPUT.status())
 				.body(ErrorResponse.of(ErrorCode.INVALID_INPUT, message));
+	}
+
+	@ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})
+	public ResponseEntity<ErrorResponse> handleMalformedInput(Exception e) {
+		return ResponseEntity.status(ErrorCode.INVALID_INPUT.status())
+				.body(ErrorResponse.of(ErrorCode.INVALID_INPUT));
 	}
 
 	@ExceptionHandler(Exception.class)
