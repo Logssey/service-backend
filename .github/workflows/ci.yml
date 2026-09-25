@@ -46,7 +46,7 @@ jobs:
       # 로컬에서 ./gradlew test 로 검증한 뒤 PR 을 올린다.
       - name: Build
         run: ./gradlew build -x test
-
+      
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
