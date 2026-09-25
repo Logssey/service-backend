@@ -131,10 +131,11 @@ public class TradeCommandService {
 		Instant changedAt = Instant.now();
 		if (before == TradeStatus.ACCEPTED) {
 			Listing listing = lockListing(trade.getListingId());
-			if (listing.getStatus() != ListingStatus.RESERVED) {
+			if (listing.getStatus() != ListingStatus.RESERVED && listing.getStatus() != ListingStatus.HIDDEN) {
 				throw new BusinessException(ErrorCode.CONFLICT);
 			}
-			listing.reopen(changedAt);
+			// Moderation visibility must survive settlement of the underlying trade.
+			if (listing.getStatus() != ListingStatus.HIDDEN) listing.reopen(changedAt);
 		}
 		trade.cancel(actor.getId(), changedAt);
 		record(trade, before, actor.getId(), reason(request), changedAt);
@@ -154,12 +155,12 @@ public class TradeCommandService {
 		requireStatus(trade, TradeStatus.ACCEPTED);
 
 		Listing listing = lockListing(trade.getListingId());
-		if (listing.getStatus() != ListingStatus.RESERVED) {
+		if (listing.getStatus() != ListingStatus.RESERVED && listing.getStatus() != ListingStatus.HIDDEN) {
 			throw new BusinessException(ErrorCode.CONFLICT);
 		}
 		Instant changedAt = Instant.now();
 		trade.complete(changedAt);
-		listing.complete(changedAt);
+		if (listing.getStatus() != ListingStatus.HIDDEN) listing.complete(changedAt);
 		record(trade, TradeStatus.ACCEPTED, buyer.getId(), null, changedAt);
 		flushTransitions();
 		notify(trade.getSellerId(), trade, "거래 완료", "거래가 완료되었습니다. 상대방에게 후기를 남겨주세요.");
