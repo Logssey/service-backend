@@ -25,6 +25,8 @@ import com.reused.trade.repository.TradeRepository;
 import com.reused.trade.repository.TradeStatusHistoryRepository;
 import com.reused.user.entity.User;
 import com.reused.notification.service.NotificationService;
+import com.reused.common.security.MarketLocks;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 @Service
 public class TradeCommandService {
@@ -37,20 +39,29 @@ public class TradeCommandService {
 	private final TradeRepository tradeRepository;
 	private final TradeStatusHistoryRepository historyRepository;
 	private final NotificationService notifications;
+	private final MarketLocks locks;
+	private final JdbcTemplate jdbc;
 
 	public TradeCommandService(TradeUserGuard userGuard, ListingRepository listingRepository,
 			TradeRepository tradeRepository, TradeStatusHistoryRepository historyRepository,
-			NotificationService notifications) {
+			NotificationService notifications, MarketLocks locks, JdbcTemplate jdbc) {
 		this.userGuard = userGuard;
 		this.listingRepository = listingRepository;
 		this.tradeRepository = tradeRepository;
 		this.historyRepository = historyRepository;
 		this.notifications = notifications;
+		this.locks = locks;
+		this.jdbc = jdbc;
 	}
 
 	@Transactional
 	public TradeCreateResponse request(AuthPrincipal principal, TradeCreateRequest request) {
+		var sellers = jdbc.query("SELECT seller_id FROM listings WHERE listing_id = ?",
+				(rs,n)->rs.getLong(1), request.listingId());
+		if (sellers.isEmpty()) throw new BusinessException(ErrorCode.NOT_FOUND);
+		locks.users(principal.userId(), sellers.getFirst());
 		User buyer = userGuard.requireUser(principal, true);
+		requireAvailableCounterparty(sellers.getFirst());
 		Listing listing = listingRepository.findActiveByIdForUpdate(request.listingId())
 				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
 		if (listing.getSellerId().equals(buyer.getId())) {
@@ -70,6 +81,8 @@ public class TradeCommandService {
 					Trade.request(listing.getId(), listing.getSellerId(), buyer.getId(), now));
 			historyRepository.save(TradeStatusHistory.changed(trade.getId(), null,
 					TradeStatus.REQUESTED, buyer.getId(), null, now));
+			jdbc.update("UPDATE chat_rooms SET trade_id = ? WHERE listing_id = ? AND buyer_id = ?",
+					trade.getId(), listing.getId(), buyer.getId());
 			notify(trade.getSellerId(), trade, "거래 요청", "새로운 거래 요청이 도착했습니다.");
 			return new TradeCreateResponse(trade.getId(), trade.getStatus().name());
 		}
@@ -80,8 +93,10 @@ public class TradeCommandService {
 
 	@Transactional
 	public TradeStatusResponse accept(AuthPrincipal principal, Long tradeId) {
+		lockParties(tradeId);
 		User seller = userGuard.requireUser(principal, true);
 		Trade trade = requireTrade(tradeId);
+		requireAvailableCounterparty(trade.getBuyerId());
 		requireSeller(trade, seller.getId());
 		requireStatus(trade, TradeStatus.REQUESTED);
 
@@ -100,6 +115,7 @@ public class TradeCommandService {
 
 	@Transactional
 	public TradeStatusResponse reject(AuthPrincipal principal, Long tradeId, TradeCloseRequest request) {
+		lockParties(tradeId);
 		User seller = userGuard.requireUser(principal, false);
 		Trade trade = requireTrade(tradeId);
 		requireSeller(trade, seller.getId());
@@ -115,6 +131,7 @@ public class TradeCommandService {
 
 	@Transactional
 	public TradeStatusResponse cancel(AuthPrincipal principal, Long tradeId, TradeCloseRequest request) {
+		lockParties(tradeId);
 		User actor = userGuard.requireUser(principal, false);
 		Trade trade = requireTrade(tradeId);
 		if (!isParty(trade, actor.getId())) {
@@ -147,6 +164,7 @@ public class TradeCommandService {
 
 	@Transactional
 	public TradeStatusResponse complete(AuthPrincipal principal, Long tradeId) {
+		lockParties(tradeId);
 		User buyer = userGuard.requireUser(principal, false);
 		Trade trade = requireTrade(tradeId);
 		if (!trade.getBuyerId().equals(buyer.getId())) {
@@ -166,6 +184,22 @@ public class TradeCommandService {
 		notify(trade.getSellerId(), trade, "거래 완료", "거래가 완료되었습니다. 상대방에게 후기를 남겨주세요.");
 		notify(trade.getBuyerId(), trade, "거래 완료", "거래가 완료되었습니다. 상대방에게 후기를 남겨주세요.");
 		return statusResponse(trade, changedAt);
+	}
+
+	private void lockParties(Long tradeId) {
+		var parties = jdbc.query("SELECT seller_id, buyer_id FROM trades WHERE trade_id = ?",
+				(rs,n)->new long[] { rs.getLong(1), rs.getLong(2) }, tradeId);
+		if (parties.isEmpty()) throw new BusinessException(ErrorCode.NOT_FOUND);
+		locks.users(parties.getFirst());
+	}
+
+	private void requireAvailableCounterparty(Long userId) {
+		boolean available = Boolean.TRUE.equals(jdbc.queryForObject("""
+				SELECT EXISTS(SELECT 1 FROM users WHERE user_id = ? AND role = 'USER'
+				AND withdrawn_at IS NULL AND status <> 'WITHDRAWN'
+				AND (status <> 'SUSPENDED' OR suspended_until <= now()))
+				""", Boolean.class, userId));
+		if (!available) throw new BusinessException(ErrorCode.CONFLICT, "현재 거래할 수 없는 회원입니다.");
 	}
 
 	private void notify(Long recipient, Trade trade, String title, String body) {

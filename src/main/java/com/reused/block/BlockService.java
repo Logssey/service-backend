@@ -16,19 +16,23 @@ import com.reused.user.dto.response.UserSummaryResponse;
 public class BlockService {
     private final JdbcTemplate jdbc;
     private final ActorGuard actors;
-    public BlockService(JdbcTemplate jdbc, ActorGuard actors) { this.jdbc = jdbc; this.actors = actors; }
+    private final MarketLocks locks;
+    public BlockService(JdbcTemplate jdbc, ActorGuard actors, MarketLocks locks) { this.jdbc = jdbc; this.actors = actors; this.locks = locks; }
     public BlockCreateResponse create(AuthPrincipal p, Long targetId) {
+        locks.users(p.userId(), targetId);
+        locks.blockPair(p.userId(), targetId);
         Long actor = actors.user(p, false);
         if (actor.equals(targetId)) throw new BusinessException(ErrorCode.INVALID_INPUT);
         if (!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM users WHERE user_id = ? AND withdrawn_at IS NULL AND status <> 'WITHDRAWN')", Boolean.class, targetId)))
             throw new BusinessException(ErrorCode.NOT_FOUND);
-        // Serialize by actor; duplicate requests return the same block id.
-        jdbc.queryForObject("SELECT user_id FROM users WHERE user_id = ? FOR UPDATE", Long.class, actor);
+        // Shared pair lock also serializes message sends against a new block.
         jdbc.update("INSERT INTO blocks (blocker_id, blocked_id) VALUES (?, ?) ON CONFLICT DO NOTHING", actor, targetId);
         Long id = jdbc.queryForObject("SELECT block_id FROM blocks WHERE blocker_id = ? AND blocked_id = ?", Long.class, actor, targetId);
         return new BlockCreateResponse(id, true);
     }
     public void delete(AuthPrincipal p, Long targetId) {
+        locks.users(p.userId(), targetId);
+        locks.blockPair(p.userId(), targetId);
         jdbc.update("DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?", actors.user(p, false), targetId);
     }
     @Transactional(readOnly=true)
