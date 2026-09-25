@@ -8,6 +8,7 @@ import com.reused.category.repository.CategoryRepository;
 import com.reused.common.error.BusinessException;
 import com.reused.common.error.ErrorCode;
 import com.reused.common.security.AuthPrincipal;
+import com.reused.common.security.MarketLocks;
 import com.reused.image.service.ListingImageService;
 import com.reused.listing.dto.request.ListingCreateRequest;
 import com.reused.listing.dto.response.ListingCreateResponse;
@@ -26,17 +27,20 @@ public class ListingCreateService {
 	private final UserRepository userRepository;
 	private final CategoryRepository categoryRepository;
 	private final ListingImageService listingImageService;
+	private final MarketLocks locks;
 
 	public ListingCreateService(ListingRepository listingRepository, UserRepository userRepository,
-			CategoryRepository categoryRepository, ListingImageService listingImageService) {
+			CategoryRepository categoryRepository, ListingImageService listingImageService, MarketLocks locks) {
 		this.listingRepository = listingRepository;
 		this.userRepository = userRepository;
 		this.categoryRepository = categoryRepository;
 		this.listingImageService = listingImageService;
+		this.locks = locks;
 	}
 
 	@Transactional
 	public ListingCreateResponse create(AuthPrincipal principal, ListingCreateRequest request) {
+		locks.users(principal.userId());
 		if (principal.role() != UserRole.USER) {
 			throw new BusinessException(ErrorCode.FORBIDDEN);
 		}

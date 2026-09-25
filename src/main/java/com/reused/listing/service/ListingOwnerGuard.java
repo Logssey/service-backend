@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 import com.reused.common.error.BusinessException;
 import com.reused.common.error.ErrorCode;
 import com.reused.common.security.AuthPrincipal;
+import com.reused.common.security.MarketLocks;
 import com.reused.listing.entity.Listing;
 import com.reused.listing.repository.ListingRepository;
 import com.reused.user.entity.User;
@@ -16,13 +17,16 @@ class ListingOwnerGuard {
 
 	private final UserRepository userRepository;
 	private final ListingRepository listingRepository;
+	private final MarketLocks locks;
 
-	ListingOwnerGuard(UserRepository userRepository, ListingRepository listingRepository) {
+	ListingOwnerGuard(UserRepository userRepository, ListingRepository listingRepository, MarketLocks locks) {
 		this.userRepository = userRepository;
 		this.listingRepository = listingRepository;
+		this.locks = locks;
 	}
 
 	Listing requireActiveOwner(AuthPrincipal principal, Long listingId) {
+		locks.users(principal.userId());
 		if (principal.role() != UserRole.USER) {
 			throw new BusinessException(ErrorCode.FORBIDDEN);
 		}
