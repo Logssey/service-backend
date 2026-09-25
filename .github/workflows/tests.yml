@@ -1,0 +1,40 @@
+name: Marketplace tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplace-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: temurin
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: chat-server/package-lock.json
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Chat dependencies and build
+        working-directory: chat-server
+        run: npm ci && npm run build
+      - name: Actual Redis and Socket.IO tests
+        working-directory: chat-server
+        run: npm test
+      - name: API and complete HTTP marketplace
+        run: ./gradlew test marketplaceE2E
+      - name: Chat container build
+        run: docker build -t reused-chat-verification:ci chat-server
