@@ -77,6 +77,7 @@ class ListingQueryRepository {
 				FROM listings l
 				JOIN users u ON u.user_id = l.seller_id
 				WHERE l.deleted_at IS NULL AND l.status <> 'HIDDEN'
+				  AND u.status <> 'WITHDRAWN' AND u.withdrawn_at IS NULL
 				""");
 		MapSqlParameterSource params = new MapSqlParameterSource().addValue("limit", limit);
 
@@ -124,10 +125,20 @@ class ListingQueryRepository {
 		return jdbc.update("""
 				UPDATE listings SET view_count = view_count + 1
 				WHERE listing_id = :listingId AND deleted_at IS NULL AND status <> 'HIDDEN'
+				  AND EXISTS (SELECT 1 FROM users u WHERE u.user_id = listings.seller_id
+				              AND u.status <> 'WITHDRAWN' AND u.withdrawn_at IS NULL)
 				""", new MapSqlParameterSource("listingId", id));
 	}
 
 	Optional<ListingDetailResponse> findDetail(Long id, @Nullable Long viewerId) {
+		return findDetail(id, viewerId, false);
+	}
+
+	Optional<ListingDetailResponse> findOwnerDetail(Long id, Long ownerId) {
+		return findDetail(id, ownerId, true);
+	}
+
+	private Optional<ListingDetailResponse> findDetail(Long id, @Nullable Long viewerId, boolean ownerOnly) {
 		String sql = """
 				SELECT l.listing_id, l.title, l.description, l.price, l.item_condition,
 				       l.trade_method, l.status, l.wish_count, l.view_count, l.created_at,
@@ -144,10 +155,12 @@ class ListingQueryRepository {
 				FROM listings l
 				JOIN users u ON u.user_id = l.seller_id
 				JOIN categories c ON c.category_id = l.category_id
-				WHERE l.listing_id = :listingId AND l.deleted_at IS NULL AND l.status <> 'HIDDEN'
+				WHERE l.listing_id = :listingId AND l.deleted_at IS NULL
+				  AND ((:ownerOnly AND l.seller_id = :viewerId) OR (NOT :ownerOnly AND l.status <> 'HIDDEN'))
+				  AND u.status <> 'WITHDRAWN' AND u.withdrawn_at IS NULL
 				""";
 		MapSqlParameterSource params = new MapSqlParameterSource("listingId", id)
-				.addValue("viewerId", viewerId, Types.BIGINT);
+				.addValue("viewerId", viewerId, Types.BIGINT).addValue("ownerOnly", ownerOnly, Types.BOOLEAN);
 		List<ListingDetailResponse> results = jdbc.query(sql, params, DETAIL_MAPPER);
 		return results.stream().findFirst();
 	}
