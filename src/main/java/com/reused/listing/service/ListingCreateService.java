@@ -8,6 +8,7 @@ import com.reused.category.repository.CategoryRepository;
 import com.reused.common.error.BusinessException;
 import com.reused.common.error.ErrorCode;
 import com.reused.common.security.AuthPrincipal;
+import com.reused.image.service.ListingImageService;
 import com.reused.listing.dto.request.ListingCreateRequest;
 import com.reused.listing.dto.response.ListingCreateResponse;
 import com.reused.listing.entity.ItemCondition;
@@ -24,12 +25,14 @@ public class ListingCreateService {
 	private final ListingRepository listingRepository;
 	private final UserRepository userRepository;
 	private final CategoryRepository categoryRepository;
+	private final ListingImageService listingImageService;
 
 	public ListingCreateService(ListingRepository listingRepository, UserRepository userRepository,
-			CategoryRepository categoryRepository) {
+			CategoryRepository categoryRepository, ListingImageService listingImageService) {
 		this.listingRepository = listingRepository;
 		this.userRepository = userRepository;
 		this.categoryRepository = categoryRepository;
+		this.listingImageService = listingImageService;
 	}
 
 	@Transactional
@@ -53,15 +56,14 @@ public class ListingCreateService {
 			throw new BusinessException(ErrorCode.INVALID_INPUT, "사용할 수 없는 카테고리입니다.");
 		}
 
-		// 이미지 메타데이터 검증 및 연결은 IMAGES 업로드 흐름과 함께 추가한다.
-		if (request.imageIds() != null && !request.imageIds().isEmpty()) {
-			throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "이미지 연결은 아직 제공되지 않습니다.");
-		}
-
 		Listing listing = Listing.create(seller.getId(), category.getId(), request.title(),
 				request.description(), request.price(), ItemCondition.valueOf(request.itemCondition()),
 				TradeMethod.valueOf(request.tradeMethod()));
-		return new ListingCreateResponse(listingRepository.save(listing).getId());
+		Long listingId = listingRepository.saveAndFlush(listing).getId();
+		if (request.imageIds() != null && !request.imageIds().isEmpty()) {
+			listingImageService.attachToNewListing(listingId, seller.getId(), request.imageIds());
+		}
+		return new ListingCreateResponse(listingId);
 	}
 
 }

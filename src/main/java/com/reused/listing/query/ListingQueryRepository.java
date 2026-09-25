@@ -30,7 +30,7 @@ class ListingQueryRepository {
 					rs.getInt("price"),
 					rs.getString("status"),
 					rs.getString("item_condition"),
-					null, // This slice creates image-free listings; URLs require the image/S3 module.
+					null,
 					rs.getInt("wish_count"),
 					new UserSummaryResponse(rs.getLong("seller_id"), rs.getString("seller_nickname"),
 							rs.getString("seller_profile_image_url")),
@@ -49,7 +49,7 @@ class ListingQueryRepository {
 						rs.getString("trade_method"),
 						rs.getString("status"),
 						new CategoryResponse(rs.getLong("category_id"), rs.getString("category_name")),
-						List.of(), // Image URLs are issued by the later image module.
+						List.of(),
 						rs.getInt("wish_count"),
 						rs.getInt("view_count"),
 						rs.getBoolean("is_wished"),

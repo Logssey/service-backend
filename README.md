@@ -9,6 +9,7 @@ Re:Used 중고거래 플랫폼의 API 서버. 요구사항·설계·API 계약�
 | 프레임워크 | Spring Boot 4.1, Java 21, Gradle | ADR-001 |
 | 데이터베이스 | PostgreSQL 18.6, JPA(Hibernate). 스키마는 SQL 스크립트로만 관리 | ADR-009, database-ddl.md |
 | 공유 상태 | Redis 7 (Refresh Token, 인증 코드, 분산 락) | ADR-010, redis-keys.md |
+| 이미지 저장소 | 비공개 S3 + 짧은 수명의 Presigned URL | ADR-011 |
 | 인증 | JWT Access Token + Redis 화이트리스트 Refresh Token | ADR-005 |
 | 테스트 | JUnit 5, MockMvc, Testcontainers | |
 
@@ -60,6 +61,13 @@ docker exec reused-postgres psql -U reused -d reused -f /tmp/002_seed_categories
 | `SPRING_DATA_REDIS_HOST` | | 기본 `localhost` |
 | `APP_AUTH_COOKIE_SECURE` | | http로 접속하는 로컬 개발에서는 `false`. 기본 `true` |
 | `MAIL_HOST` / `MAIL_PORT` / `MAIL_FROM` | | SMTP 대역. 기본 `localhost` / `1025` / `no-reply@reused.local` |
+| `IMAGE_S3_BUCKET` | 이미지 사용 시 O | 비공개 이미지 버킷. 비어 있으면 서버는 기동하지만 이미지 API는 503을 반환 |
+| `IMAGE_S3_REGION` | | 이미지 버킷 리전. 기본 `ap-northeast-2` |
+| `IMAGE_S3_ENDPOINT` | | LocalStack·MinIO용 endpoint override. AWS에서는 비워 둔다 |
+| `IMAGE_ORPHAN_RETENTION` | | 게시글에 연결되지 않은 이미지 보존 기간. 기본 `24h` |
+| `IMAGE_CLEANUP_INTERVAL` | | 고아 이미지 정리 주기. 기본 `1h` |
+| `IMAGE_UNATTACHED_LIMIT` | | 사용자별 미연결 이미지 상한. 기본 `20` |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | 로컬 S3 사용 시 | AWS SDK 기본 자격증명 체인을 사용한다. 운영에서는 정적 키 대신 workload role을 사용한다 |
 
 ```bash
 export JWT_SECRET="local-dev-secret-key-must-be-at-least-32-bytes-long"
@@ -73,13 +81,24 @@ export APP_AUTH_COOKIE_SECURE="false"
 
 서버는 `http://localhost:8080`에서 뜬다. 프론트엔드 개발 서버(`service-frontend`, 5173)가 `/api` 요청을 이 주소로 프록시한다.
 
+### 이미지 저장소 운영 조건
+
+- 버킷은 공개 접근을 차단하고 암호화를 활성화한다. 런타임 역할에는 대상 버킷의 `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` 권한만 부여한다.
+- 브라우저 직접 업로드를 위해 프론트 Origin의 `PUT`과 `Content-Type`을 버킷 CORS에 허용한다. 업로드 URL은 요청한 `Content-Type`과 정확한 `Content-Length`를 함께 서명한다.
+- 클라이언트는 URL 발급 요청의 `contentType`과 `fileSize`를 그대로 사용해 원본 바이트를 `PUT`해야 한다. 둘 중 하나라도 달라지면 S3가 서명 불일치로 요청을 거부한다.
+- `pending/` prefix에는 1일 만료 S3 Lifecycle 규칙을 반드시 둔다. 완료 후에도 5분짜리 업로드 URL이 만료되기 전까지 원래 key가 다시 생성될 수 있기 때문이다.
+- 애플리케이션은 업로드 메타데이터의 `created_at`을 기준으로, 24시간이 지난 미연결 DB 행과 객체를 정리한다. 저장소 삭제 실패 시 행을 `REJECTED` 상태로 남겨 다음 주기에 재시도한다.
+- 한 사용자는 기본 20개의 미연결 이미지만 보유할 수 있다. 상한에 도달하면 기존 이미지를 게시글에 연결하거나 삭제할 때까지 새 업로드 URL 발급이 429로 제한된다.
+- 게시글 수정에서 빠진 이미지는 연결 해제 후 위 정리 대상이 된다. 이미 24시간이 지난 이미지는 다음 정리 주기에 삭제된다. 소프트 삭제한 게시글의 연결 이미지는 거래·감사 근거 보존을 위해 그대로 유지한다.
+- 1차 범위는 `LISTING` 이미지다. `PROFILE` 업로드 연결은 별도 후속 작업이다.
+
 ## 테스트
 
 ```bash
 ./gradlew test
 ```
 
-통합 테스트는 실제 PostgreSQL·Redis 컨테이너 위에서 돌고, `schema/` 스크립트를 그대로 적용한다. 외부 시스템(카카오 API, SMTP)만 인터페이스 뒤의 대역으로 바꾼다.
+통합 테스트는 실제 PostgreSQL·Redis 컨테이너 위에서 돌고, `schema/` 스크립트를 그대로 적용한다. 외부 시스템(카카오 API, SMTP, S3)만 인터페이스 뒤의 대역으로 바꾼다.
 
 ## 프로젝트 구조
 

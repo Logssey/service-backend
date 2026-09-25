@@ -1,6 +1,7 @@
 package com.reused.trade.query;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.springframework.stereotype.Service;
@@ -10,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.reused.common.error.BusinessException;
 import com.reused.common.error.ErrorCode;
 import com.reused.common.security.AuthPrincipal;
+import com.reused.image.service.ListingImageService;
 import com.reused.listing.query.CursorPageResponse;
 import com.reused.trade.service.TradeUserGuard;
 import com.reused.user.entity.User;
@@ -26,10 +28,13 @@ public class TradeQueryService {
 
 	private final TradeUserGuard userGuard;
 	private final TradeQueryRepository repository;
+	private final ListingImageService listingImageService;
 
-	public TradeQueryService(TradeUserGuard userGuard, TradeQueryRepository repository) {
+	public TradeQueryService(TradeUserGuard userGuard, TradeQueryRepository repository,
+			ListingImageService listingImageService) {
 		this.userGuard = userGuard;
 		this.repository = repository;
+		this.listingImageService = listingImageService;
 	}
 
 	public CursorPageResponse<TradeSummaryResponse> getTrades(AuthPrincipal principal,
@@ -40,7 +45,12 @@ public class TradeQueryService {
 		List<TradeSummaryResponse> rows = repository.findSummaries(user.getId(), search, cursor,
 				search.size() + 1);
 		boolean hasNext = rows.size() > search.size();
-		List<TradeSummaryResponse> items = List.copyOf(rows.subList(0, Math.min(search.size(), rows.size())));
+		List<TradeSummaryResponse> page = rows.subList(0, Math.min(search.size(), rows.size()));
+		Map<Long, String> thumbnails = listingImageService.thumbnailsForListings(
+				page.stream().map(item -> item.listing().listingId()).toList());
+		List<TradeSummaryResponse> items = page.stream()
+				.map(item -> withThumbnail(item, thumbnails.get(item.listing().listingId())))
+				.toList();
 		String nextCursor = hasNext ? TradeCursor.encode(items.getLast()) : null;
 		return new CursorPageResponse<>(items, nextCursor, hasNext);
 	}
@@ -56,9 +66,20 @@ public class TradeQueryService {
 		if (!base.seller().userId().equals(user.getId()) && !base.buyer().userId().equals(user.getId())) {
 			throw new BusinessException(ErrorCode.FORBIDDEN);
 		}
-		return new TradeDetailResponse(base.tradeId(), base.status(), base.listing(), base.seller(),
+		String thumbnail = listingImageService.thumbnailsForListings(List.of(base.listing().listingId()))
+				.get(base.listing().listingId());
+		ListingBriefResponse listing = new ListingBriefResponse(base.listing().listingId(),
+				base.listing().title(), base.listing().price(), thumbnail);
+		return new TradeDetailResponse(base.tradeId(), base.status(), listing, base.seller(),
 				base.buyer(), base.myRole(), base.chatRoomId(), base.reviewWritten(),
 				repository.findHistories(tradeId));
+	}
+
+	private static TradeSummaryResponse withThumbnail(TradeSummaryResponse item, String thumbnail) {
+		ListingBriefResponse listing = new ListingBriefResponse(item.listing().listingId(),
+				item.listing().title(), item.listing().price(), thumbnail);
+		return new TradeSummaryResponse(item.tradeId(), item.status(), listing, item.counterparty(),
+				item.myRole(), item.requestedAt(), item.completedAt(), item.reviewWritten());
 	}
 
 	private static TradeSearchRequest validateAndNormalize(TradeSearchRequest request) {

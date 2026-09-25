@@ -1,12 +1,16 @@
 package com.reused.trade;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +40,7 @@ import com.reused.TestcontainersConfiguration;
 import com.reused.auth.client.OAuthProviderClient;
 import com.reused.auth.mail.AuthMailSender;
 import com.reused.auth.token.JwtTokenProvider;
+import com.reused.image.storage.ImageStorage;
 import com.reused.user.entity.UserRole;
 
 @Import(TestcontainersConfiguration.class)
@@ -64,9 +69,14 @@ class TradeIntegrationTest {
 	@MockitoBean
 	private AuthMailSender mailSender;
 
+	@MockitoBean
+	private ImageStorage imageStorage;
+
 	@BeforeEach
 	void resetState() {
 		jdbcTemplate.execute("TRUNCATE users RESTART IDENTITY CASCADE");
+		when(imageStorage.presignRead(anyString(), any(Duration.class)))
+				.thenAnswer(invocation -> "https://images.example.test/" + invocation.getArgument(0));
 	}
 
 	@Test
@@ -300,6 +310,7 @@ class TradeIntegrationTest {
 		Long firstListingId = insertListing(sellerId, "첫 상품", "ON_SALE", BASE_TIME);
 		Long secondListingId = insertListing(sellerId, "둘 상품", "ON_SALE", BASE_TIME);
 		Long thirdListingId = insertListing(sellerId, "셋 상품", "ON_SALE", BASE_TIME);
+		insertVerifiedImage(sellerId, thirdListingId, "trade/third.jpg");
 		Long sellerListingId = insertListing(memberId, "판매 상품", "RESERVED", BASE_TIME);
 		Long firstTradeId = insertTrade(firstListingId, sellerId, memberId, "REQUESTED", BASE_TIME);
 		Long secondTradeId = insertTrade(secondListingId, sellerId, memberId, "REQUESTED", BASE_TIME);
@@ -318,6 +329,8 @@ class TradeIntegrationTest {
 				.andExpect(jsonPath("$.items[0].tradeId").value(thirdTradeId))
 				.andExpect(jsonPath("$.items[0].myRole").value("BUYER"))
 				.andExpect(jsonPath("$.items[0].counterparty.userId").value(sellerId))
+				.andExpect(jsonPath("$.items[0].listing.thumbnailUrl")
+						.value("https://images.example.test/trade/third.jpg"))
 				.andExpect(jsonPath("$.items[1].tradeId").value(secondTradeId))
 				.andExpect(jsonPath("$.hasNext").value(true))
 				.andExpect(jsonPath("$.nextCursor").isNotEmpty())
@@ -354,6 +367,7 @@ class TradeIntegrationTest {
 		Long buyerId = insertUser("구매자", UserRole.USER);
 		Long outsiderId = insertUser("제삼자", UserRole.USER);
 		Long listingId = insertListing(sellerId, "상세 상품", "RESERVED", BASE_TIME);
+		insertVerifiedImage(sellerId, listingId, "trade/detail.jpg");
 		Long tradeId = insertTrade(listingId, sellerId, buyerId, "ACCEPTED", BASE_TIME);
 		insertHistory(tradeId, null, "REQUESTED", buyerId, null, BASE_TIME);
 		insertHistory(tradeId, "REQUESTED", "ACCEPTED", sellerId, null, BASE_TIME.plusSeconds(1));
@@ -365,6 +379,8 @@ class TradeIntegrationTest {
 				.andExpect(jsonPath("$.status").value("ACCEPTED"))
 				.andExpect(jsonPath("$.listing.listingId").value(listingId))
 				.andExpect(jsonPath("$.listing.title").value("상세 상품"))
+				.andExpect(jsonPath("$.listing.thumbnailUrl")
+						.value("https://images.example.test/trade/detail.jpg"))
 				.andExpect(jsonPath("$.seller.userId").value(sellerId))
 				.andExpect(jsonPath("$.seller.nickname").value("판매자"))
 				.andExpect(jsonPath("$.buyer.userId").value(buyerId))
@@ -514,6 +530,14 @@ class TradeIntegrationTest {
 						+ "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING trade_id",
 				Long.class, listingId, sellerId, buyerId, status, Timestamp.from(requestedAt),
 				acceptedAt, completedAt);
+	}
+
+	private void insertVerifiedImage(Long uploaderId, Long listingId, String objectKey) {
+		jdbcTemplate.update("""
+				INSERT INTO listing_images
+				    (listing_id, uploader_id, object_key, content_type, file_size, status, display_order)
+				VALUES (?, ?, ?, 'image/jpeg', 1024, 'VERIFIED', 0)
+				""", listingId, uploaderId, objectKey);
 	}
 
 	private void insertHistory(Long tradeId, String beforeStatus, String afterStatus, Long changedBy,

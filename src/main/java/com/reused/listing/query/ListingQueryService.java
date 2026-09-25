@@ -1,6 +1,7 @@
 package com.reused.listing.query;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.jspecify.annotations.Nullable;
@@ -9,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.reused.common.error.BusinessException;
 import com.reused.common.error.ErrorCode;
+import com.reused.image.service.ListingImageService;
 
 @Service
 @Transactional(readOnly = true)
@@ -21,9 +23,11 @@ public class ListingQueryService {
 	private static final Set<String> SORTS = Set.of("latest", "priceAsc", "priceDesc");
 
 	private final ListingQueryRepository repository;
+	private final ListingImageService listingImageService;
 
-	public ListingQueryService(ListingQueryRepository repository) {
+	public ListingQueryService(ListingQueryRepository repository, ListingImageService listingImageService) {
 		this.repository = repository;
+		this.listingImageService = listingImageService;
 	}
 
 	public CursorPageResponse<ListingSummaryResponse> getListings(ListingSearchRequest request,
@@ -35,7 +39,14 @@ public class ListingQueryService {
 
 		List<ListingSummaryResponse> rows = repository.findSummaries(search, cursor, viewerId, size + 1);
 		boolean hasNext = rows.size() > size;
-		List<ListingSummaryResponse> items = List.copyOf(rows.subList(0, Math.min(size, rows.size())));
+		List<ListingSummaryResponse> page = rows.subList(0, Math.min(size, rows.size()));
+		Map<Long, String> thumbnails = listingImageService.thumbnailsForListings(
+				page.stream().map(ListingSummaryResponse::listingId).toList());
+		List<ListingSummaryResponse> items = page.stream()
+				.map(item -> new ListingSummaryResponse(item.listingId(), item.title(), item.price(),
+						item.status(), item.itemCondition(), thumbnails.get(item.listingId()), item.wishCount(),
+						item.seller(), item.createdAt()))
+				.toList();
 		String nextCursor = hasNext ? ListingCursor.encode(search.sort(), items.getLast()) : null;
 		return new CursorPageResponse<>(items, nextCursor, hasNext);
 	}
@@ -48,14 +59,22 @@ public class ListingQueryService {
 		if (repository.incrementViewCount(id) == 0) {
 			throw new BusinessException(ErrorCode.NOT_FOUND);
 		}
-		return repository.findDetail(id, viewerId)
-				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+		return withImages(repository.findDetail(id, viewerId)
+				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND)));
 	}
 
 	/** Returns the same detail projection after a write without counting it as a view. */
 	public ListingDetailResponse getListingAfterUpdate(Long id, Long ownerId) {
-		return repository.findDetail(id, ownerId)
-				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+		return withImages(repository.findDetail(id, ownerId)
+				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND)));
+	}
+
+	private ListingDetailResponse withImages(ListingDetailResponse detail) {
+		return new ListingDetailResponse(detail.listingId(), detail.title(), detail.description(),
+				detail.price(), detail.itemCondition(), detail.tradeMethod(), detail.status(),
+				detail.category(), listingImageService.imagesForListing(detail.listingId()),
+				detail.wishCount(), detail.viewCount(), detail.isWished(), detail.isMine(),
+				detail.seller(), detail.createdAt());
 	}
 
 	private static ListingSearchRequest validateAndNormalize(ListingSearchRequest request) {
