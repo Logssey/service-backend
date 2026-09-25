@@ -4,5 +4,5 @@ import java.time.Instant;
 
 public record ImageRecord(Long imageId, Long listingId, Long uploaderId, String objectKey,
 		String thumbnailKey, String contentType, long fileSize, String status, int displayOrder,
-		Instant createdAt) {
+		Instant createdAt, String purpose, Long profileUserId) {
 }

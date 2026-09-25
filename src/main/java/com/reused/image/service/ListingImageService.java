@@ -95,6 +95,9 @@ public class ListingImageService {
 			if (!image.uploaderId().equals(uploaderId)) {
 				throw new BusinessException(ErrorCode.FORBIDDEN);
 			}
+			if (!"LISTING".equals(image.purpose())) {
+				throw new BusinessException(ErrorCode.INVALID_INPUT, "프로필 이미지는 게시글에 연결할 수 없습니다.");
+			}
 			if (!"VERIFIED".equals(image.status())) {
 				throw new BusinessException(ErrorCode.INVALID_INPUT, "검증되지 않은 이미지가 있습니다.");
 			}
