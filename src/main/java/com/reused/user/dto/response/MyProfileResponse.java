@@ -7,6 +7,8 @@ import com.reused.user.entity.User;
 import com.reused.user.entity.UserIdentity;
 import com.reused.user.entity.UserRole;
 import com.reused.user.entity.UserStatus;
+import com.reused.image.service.ProfileImageUrlSerializer;
+import tools.jackson.databind.annotation.JsonSerialize;
 
 /**
  * 본인 정보(내 정보 조회 명세).
@@ -17,7 +19,7 @@ import com.reused.user.entity.UserStatus;
 public record MyProfileResponse(
 		Long userId,
 		String nickname,
-		String profileImageUrl,
+		@JsonSerialize(using = ProfileImageUrlSerializer.class) String profileImageUrl,
 		String bio,
 		UserRole role,
 		UserStatus status,

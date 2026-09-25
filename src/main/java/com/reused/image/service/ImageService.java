@@ -19,6 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -34,9 +35,7 @@ import com.reused.image.repository.ImageRepository;
 import com.reused.image.storage.ImageStorage;
 import com.reused.image.storage.ImageStorageException;
 import com.reused.image.storage.StoredImage;
-import com.reused.user.entity.User;
 import com.reused.user.entity.UserRole;
-import com.reused.user.repository.UserRepository;
 
 @Service
 public class ImageService {
@@ -49,14 +48,14 @@ public class ImageService {
 	private static final Set<String> CONTENT_TYPES = Set.of("image/jpeg", "image/png", "image/webp");
 
 	private final ImageRepository repository;
-	private final UserRepository users;
+	private final JdbcTemplate jdbc;
 	private final ImageStorage storage;
 	private final int unattachedLimit;
 
-	public ImageService(ImageRepository repository, UserRepository users, ImageStorage storage,
+	public ImageService(ImageRepository repository, JdbcTemplate jdbc, ImageStorage storage,
 			@Value("${app.image.unattached-limit:20}") int unattachedLimit) {
 		this.repository = repository;
-		this.users = users;
+		this.jdbc = jdbc;
 		this.storage = storage;
 		this.unattachedLimit = unattachedLimit;
 	}
@@ -64,9 +63,10 @@ public class ImageService {
 	@Transactional
 	public ImageUploadUrlResponse issueUploadUrl(AuthPrincipal principal, ImageUploadUrlRequest request) {
 		Long uploaderId = requireActiveUser(principal);
-		if (!"LISTING".equals(request.purpose())) {
-			throw new BusinessException(ErrorCode.INVALID_INPUT, "상품 이미지 업로드만 지원합니다.");
+		if (!"LISTING".equals(request.purpose()) && !"PROFILE".equals(request.purpose())) {
+			throw new BusinessException(ErrorCode.INVALID_INPUT, "이미지 용도가 올바르지 않습니다.");
 		}
+		if ("PROFILE".equals(request.purpose())) repository.requireProfiles();
 		if (!CONTENT_TYPES.contains(request.contentType()) || request.fileSize() == null
 				|| request.fileSize() < 1 || request.fileSize() > MAX_SIZE) {
 			throw new BusinessException(ErrorCode.INVALID_INPUT, "이미지 형식 또는 크기가 올바르지 않습니다.");
@@ -74,7 +74,6 @@ public class ImageService {
 		if (!validExtension(request.fileName(), request.contentType())) {
 			throw new BusinessException(ErrorCode.INVALID_INPUT, "파일 확장자와 이미지 형식이 일치하지 않습니다.");
 		}
-		repository.lockUploader(uploaderId);
 		if (repository.countUnattachedByUploader(uploaderId) >= unattachedLimit) {
 			throw new BusinessException(ErrorCode.RATE_LIMITED,
 					"연결되지 않은 이미지를 먼저 사용하거나 삭제해 주세요.");
@@ -85,8 +84,9 @@ public class ImageService {
 			case "image/webp" -> ".webp";
 			default -> throw new IllegalStateException("이미지 형식 검사 누락");
 		};
-		String key = "pending/listing-images/" + uploaderId + "/" + UUID.randomUUID() + extension;
-		Long imageId = repository.insertPending(uploaderId, key, request.contentType(), request.fileSize());
+		String folder = "PROFILE".equals(request.purpose()) ? "profile-images/" : "listing-images/";
+		String key = "pending/" + folder + uploaderId + "/" + UUID.randomUUID() + extension;
+		Long imageId = repository.insertPending(uploaderId, key, request.contentType(), request.fileSize(), request.purpose());
 		Instant expiresAt = Instant.now().plus(UPLOAD_URL_TTL);
 		try {
 			String url = storage.presignUpload(key, request.contentType(), request.fileSize(), UPLOAD_URL_TTL);
@@ -146,8 +146,8 @@ public class ImageService {
 	public void delete(AuthPrincipal principal, Long imageId) {
 		Long uploaderId = requireActiveUser(principal);
 		ImageRecord image = ownedImageForUpdate(imageId, uploaderId);
-		if (image.listingId() != null) {
-			throw new BusinessException(ErrorCode.CONFLICT, "게시글에 연결된 이미지는 게시글 수정에서 해제해야 합니다.");
+		if (image.listingId() != null || image.profileUserId() != null) {
+			throw new BusinessException(ErrorCode.CONFLICT, "사용 중인 이미지는 게시글 또는 프로필 수정에서 해제해야 합니다.");
 		}
 		try {
 			deleteStoredObjects(image.objectKey());
@@ -159,19 +159,28 @@ public class ImageService {
 	}
 
 	private Long requireActiveUser(AuthPrincipal principal) {
+		if (principal == null) throw new BusinessException(ErrorCode.UNAUTHENTICATED);
 		if (principal.role() != UserRole.USER) {
 			throw new BusinessException(ErrorCode.FORBIDDEN);
 		}
-		User user = users.findById(principal.userId())
-				.orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHENTICATED));
-		if (user.getRole() != UserRole.USER || user.isWithdrawn()) {
+		// A current SQL row avoids a stale JPA entity after waiting for profile/withdrawal operations.
+		var rows = jdbc.query("SELECT role, status, withdrawn_at FROM users WHERE user_id = ? FOR NO KEY UPDATE",
+				(rs, n) -> new Uploader(rs.getString("role"), rs.getString("status"), rs.getTimestamp("withdrawn_at") != null),
+				principal.userId());
+		if (rows.isEmpty() || rows.getFirst().withdrawn() || "WITHDRAWN".equals(rows.getFirst().status())) {
+			throw new BusinessException(ErrorCode.UNAUTHENTICATED);
+		}
+		Uploader user = rows.getFirst();
+		if (!"USER".equals(user.role())) {
 			throw new BusinessException(ErrorCode.FORBIDDEN);
 		}
-		if (user.isSuspended()) {
+		if ("SUSPENDED".equals(user.status())) {
 			throw new BusinessException(ErrorCode.USER_SUSPENDED);
 		}
-		return user.getId();
+		return principal.userId();
 	}
+
+	private record Uploader(String role, String status, boolean withdrawn) {}
 
 	private ImageRecord ownedImageForUpdate(Long imageId, Long uploaderId) {
 		if (imageId == null || imageId <= 0) {
