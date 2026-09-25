@@ -11,14 +11,14 @@ ARG JAR_FILE=build/libs/*.jar
 FROM eclipse-temurin:21-jre-alpine
 
 # 루트로 실행하지 않는다.
-RUN addgroup -S app && adduser -S app -G app
+RUN addgroup -S -g 1000 app && adduser -S -u 1000 -G app app
 
 WORKDIR /app
 
 ARG JAR_FILE
 COPY ${JAR_FILE} app.jar
 
-USER app
+USER 1000
 
 EXPOSE 8080
 
