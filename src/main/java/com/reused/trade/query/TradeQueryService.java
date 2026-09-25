@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Set;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.reused.common.error.BusinessException;
@@ -44,6 +45,7 @@ public class TradeQueryService {
 		return new CursorPageResponse<>(items, nextCursor, hasNext);
 	}
 
+	@Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
 	public TradeDetailResponse getTrade(AuthPrincipal principal, Long tradeId) {
 		User user = userGuard.requireUser(principal, false);
 		if (tradeId == null || tradeId <= 0) {
