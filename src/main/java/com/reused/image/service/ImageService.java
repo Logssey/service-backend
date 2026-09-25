@@ -17,6 +17,7 @@ import javax.imageio.stream.ImageInputStream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -50,11 +51,14 @@ public class ImageService {
 	private final ImageRepository repository;
 	private final UserRepository users;
 	private final ImageStorage storage;
+	private final int unattachedLimit;
 
-	public ImageService(ImageRepository repository, UserRepository users, ImageStorage storage) {
+	public ImageService(ImageRepository repository, UserRepository users, ImageStorage storage,
+			@Value("${app.image.unattached-limit:20}") int unattachedLimit) {
 		this.repository = repository;
 		this.users = users;
 		this.storage = storage;
+		this.unattachedLimit = unattachedLimit;
 	}
 
 	@Transactional
@@ -70,6 +74,11 @@ public class ImageService {
 		if (!validExtension(request.fileName(), request.contentType())) {
 			throw new BusinessException(ErrorCode.INVALID_INPUT, "파일 확장자와 이미지 형식이 일치하지 않습니다.");
 		}
+		repository.lockUploader(uploaderId);
+		if (repository.countUnattachedByUploader(uploaderId) >= unattachedLimit) {
+			throw new BusinessException(ErrorCode.RATE_LIMITED,
+					"연결되지 않은 이미지를 먼저 사용하거나 삭제해 주세요.");
+		}
 		String extension = switch (request.contentType()) {
 			case "image/jpeg" -> ".jpg";
 			case "image/png" -> ".png";
@@ -80,7 +89,7 @@ public class ImageService {
 		Long imageId = repository.insertPending(uploaderId, key, request.contentType(), request.fileSize());
 		Instant expiresAt = Instant.now().plus(UPLOAD_URL_TTL);
 		try {
-			String url = storage.presignUpload(key, request.contentType(), UPLOAD_URL_TTL);
+			String url = storage.presignUpload(key, request.contentType(), request.fileSize(), UPLOAD_URL_TTL);
 			return new ImageUploadUrlResponse(imageId, url, expiresAt);
 		}
 		catch (ImageStorageException ex) {
@@ -140,8 +149,13 @@ public class ImageService {
 		if (image.listingId() != null) {
 			throw new BusinessException(ErrorCode.CONFLICT, "게시글에 연결된 이미지는 게시글 수정에서 해제해야 합니다.");
 		}
+		try {
+			deleteStoredObjects(image.objectKey());
+		}
+		catch (ImageStorageException ex) {
+			throw storageFailure("이미지 객체를 삭제할 수 없습니다.", ex);
+		}
 		repository.delete(imageId);
-		cleanupObjectAfterCommit(imageId, image.objectKey());
 	}
 
 	private Long requireActiveUser(AuthPrincipal principal) {
@@ -285,6 +299,13 @@ public class ImageService {
 				}
 			}
 		});
+	}
+
+	private void deleteStoredObjects(String objectKey) {
+		storage.delete(objectKey);
+		if (objectKey.startsWith("pending/")) {
+			storage.delete(objectKey.replaceFirst("^pending/", "verified/"));
+		}
 	}
 
 	private static int u(byte value) {

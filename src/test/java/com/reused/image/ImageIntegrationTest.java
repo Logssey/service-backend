@@ -43,6 +43,8 @@ import com.reused.auth.mail.AuthMailSender;
 import com.reused.auth.token.JwtTokenProvider;
 import com.reused.image.storage.ImageStorage;
 import com.reused.image.storage.StoredImage;
+import com.reused.image.storage.ImageStorageException;
+import com.reused.image.service.ImageCleanupService;
 import com.reused.user.entity.UserRole;
 
 @Import({TestcontainersConfiguration.class, ImageIntegrationTest.FakeStorageConfig.class})
@@ -61,6 +63,7 @@ class ImageIntegrationTest {
 	@Autowired private ObjectMapper mapper;
 	@Autowired private JwtTokenProvider tokens;
 	@Autowired private FakeImageStorage storage;
+	@Autowired private ImageCleanupService cleanupService;
 	@MockitoBean private OAuthProviderClient kakaoClient;
 	@MockitoBean private AuthMailSender mailSender;
 
@@ -92,6 +95,25 @@ class ImageIntegrationTest {
 		mvc.perform(uploadRequest(userId, "LISTING", "photo.jpg", "image/jpeg", 10_485_761))
 				.andExpect(status().isBadRequest());
 		assertThat(jdbc.queryForObject("SELECT count(*) FROM listing_images", Long.class)).isZero();
+	}
+
+	@Test
+	void uploadUrlIssuanceCapsUnattachedImagesPerUser() throws Exception {
+		Long owner = user("USER", "ACTIVE");
+		for (int index = 0; index < 20; index++) {
+			jdbc.update("""
+					INSERT INTO listing_images
+					    (uploader_id, object_key, content_type, file_size, status)
+					VALUES (?, ?, 'image/jpeg', 1, 'PENDING')
+					""", owner, "pending/quota/" + index + ".jpg");
+		}
+
+		mvc.perform(uploadRequest(owner, "LISTING", "next.jpg", "image/jpeg", JPEG.length))
+				.andExpect(status().isTooManyRequests())
+				.andExpect(jsonPath("$.code").value("RATE_LIMITED"));
+		assertThat(jdbc.queryForObject(
+				"SELECT count(*) FROM listing_images WHERE uploader_id = ?", Long.class, owner))
+				.isEqualTo(20);
 	}
 
 	@Test
@@ -260,10 +282,56 @@ class ImageIntegrationTest {
 		mvc.perform(delete(IMAGES + "/{imageId}", id)
 					.header("Authorization", bearer(owner, UserRole.USER)))
 				.andExpect(status().isNoContent());
-		assertThat(storage.lastDeleteSawNoReference).isTrue();
+		assertThat(storage.deleteSawDurableReference).isTrue();
 		assertThat(storage.bytes(finalKey)).isNull();
 		assertThat(jdbc.queryForObject("SELECT count(*) FROM listing_images WHERE image_id = ?", Long.class, id))
 				.isZero();
+	}
+
+	@Test
+	void deleteFailureKeepsMetadataSoTheClientCanRetry() throws Exception {
+		Long owner = user("USER", "ACTIVE");
+		Long id = upload(owner, "retry.jpg", "image/jpeg", JPEG.length).get("imageId").asLong();
+		String key = storage.lastUploadKey;
+		storage.put(key, "image/jpeg", JPEG);
+		storage.deleteFailures = 1;
+
+		mvc.perform(delete(IMAGES + "/{imageId}", id)
+					.header("Authorization", bearer(owner, UserRole.USER)))
+				.andExpect(status().isBadGateway())
+				.andExpect(jsonPath("$.code").value("EXTERNAL_SERVICE_ERROR"));
+		assertThat(jdbc.queryForObject("SELECT count(*) FROM listing_images WHERE image_id = ?", Long.class, id))
+				.isOne();
+		assertThat(storage.bytes(key)).isNotNull();
+
+		mvc.perform(delete(IMAGES + "/{imageId}", id)
+					.header("Authorization", bearer(owner, UserRole.USER)))
+				.andExpect(status().isNoContent());
+		assertThat(jdbc.queryForObject("SELECT count(*) FROM listing_images WHERE image_id = ?", Long.class, id))
+				.isZero();
+	}
+
+	@Test
+	void expiredOrphansKeepATombstoneUntilAllObjectsAreDeleted() throws Exception {
+		Long owner = user("USER", "ACTIVE");
+		Long id = upload(owner, "orphan.jpg", "image/jpeg", JPEG.length).get("imageId").asLong();
+		String pendingKey = storage.lastUploadKey;
+		String verifiedKey = pendingKey.replaceFirst("^pending/", "verified/");
+		storage.put(pendingKey, "image/jpeg", JPEG);
+		storage.put(verifiedKey, "image/jpeg", JPEG);
+		jdbc.update("UPDATE listing_images SET created_at = now() - interval '2 days' WHERE image_id = ?", id);
+		storage.deleteFailures = 1;
+
+		cleanupService.cleanupExpiredOrphans();
+		assertThat(jdbc.queryForObject("SELECT status FROM listing_images WHERE image_id = ?", String.class, id))
+				.isEqualTo("REJECTED");
+		assertThat(storage.bytes(pendingKey)).isNotNull();
+
+		cleanupService.cleanupExpiredOrphans();
+		assertThat(jdbc.queryForObject("SELECT count(*) FROM listing_images WHERE image_id = ?", Long.class, id))
+				.isZero();
+		assertThat(storage.bytes(pendingKey)).isNull();
+		assertThat(storage.bytes(verifiedKey)).isNull();
 	}
 
 	private JsonNode upload(Long userId, String fileName, String contentType, long size) throws Exception {
@@ -328,7 +396,8 @@ class ImageIntegrationTest {
 		private int nextEtag;
 		private String lastUploadKey;
 		private boolean changeBeforePromotion;
-		private boolean lastDeleteSawNoReference;
+		private boolean deleteSawDurableReference;
+		private int deleteFailures;
 
 		FakeImageStorage(JdbcTemplate jdbc) {
 			this.jdbc = jdbc;
@@ -339,7 +408,8 @@ class ImageIntegrationTest {
 			nextEtag = 0;
 			lastUploadKey = null;
 			changeBeforePromotion = false;
-			lastDeleteSawNoReference = false;
+			deleteSawDurableReference = false;
+			deleteFailures = 0;
 		}
 
 		void put(String key, String contentType, byte[] bytes) {
@@ -352,8 +422,9 @@ class ImageIntegrationTest {
 		}
 
 		@Override
-		public String presignUpload(String key, String contentType, Duration ttl) {
+		public String presignUpload(String key, String contentType, long contentLength, Duration ttl) {
 			assertThat(ttl).isEqualTo(Duration.ofMinutes(5));
+			assertThat(contentLength).isPositive().isLessThanOrEqualTo(10L * 1024 * 1024);
 			lastUploadKey = key;
 			return "https://storage.test/upload/" + key;
 		}
@@ -387,8 +458,12 @@ class ImageIntegrationTest {
 
 		@Override
 		public void delete(String key) {
-			lastDeleteSawNoReference = jdbc.queryForObject(
-					"SELECT count(*) FROM listing_images WHERE object_key = ?", Long.class, key) == 0;
+			deleteSawDurableReference |= jdbc.queryForObject(
+					"SELECT count(*) FROM listing_images WHERE object_key = ?", Long.class, key) == 1;
+			if (deleteFailures > 0) {
+				deleteFailures--;
+				throw new ImageStorageException("temporary delete failure", null);
+			}
 			objects.remove(key);
 		}
 

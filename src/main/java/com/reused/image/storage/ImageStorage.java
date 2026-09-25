@@ -6,7 +6,7 @@ import java.util.Optional;
 /** Operations against a private object store. URLs are short lived and object keys stay server-owned. */
 public interface ImageStorage {
 
-	String presignUpload(String objectKey, String contentType, Duration ttl);
+	String presignUpload(String objectKey, String contentType, long contentLength, Duration ttl);
 
 	Optional<StoredImage> inspect(String objectKey);
 

@@ -33,10 +33,11 @@ final class S3ImageStorage implements ImageStorage, AutoCloseable {
 	}
 
 	@Override
-	public String presignUpload(String objectKey, String contentType, Duration ttl) {
+	public String presignUpload(String objectKey, String contentType, long contentLength, Duration ttl) {
 		try {
 			PutObjectRequest put = PutObjectRequest.builder()
-					.bucket(bucket).key(objectKey).contentType(contentType).build();
+					.bucket(bucket).key(objectKey).contentType(contentType)
+					.contentLength(contentLength).build();
 			return presigner.presignPutObject(PutObjectPresignRequest.builder()
 					.signatureDuration(ttl).putObjectRequest(put).build()).url().toString();
 		}

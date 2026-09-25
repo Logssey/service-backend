@@ -407,6 +407,7 @@ class ListingIntegrationTest {
 		Long buyerId = insertUser("구매자", UserRole.USER);
 		Long listingId = insertListing(sellerId, categoryId("디지털기기"), "삭제할 게시글", 100,
 				"COMPLETED", BASE_TIME);
+		Long imageId = insertVerifiedImage(sellerId, listingId);
 		insertCompletedTrade(listingId, sellerId, buyerId);
 
 		mockMvc.perform(delete(LISTINGS + "/{listingId}", listingId)
@@ -418,6 +419,9 @@ class ListingIntegrationTest {
 		assertThat(row.get("deleted_at")).isNotNull();
 		assertThat(((Number) row.get("deleted_by")).longValue()).isEqualTo(sellerId);
 		assertThat(row.get("updated_at")).isEqualTo(row.get("deleted_at"));
+		assertThat(jdbcTemplate.queryForObject(
+				"SELECT listing_id FROM listing_images WHERE image_id = ?", Long.class, imageId))
+				.isEqualTo(listingId);
 		mockMvc.perform(get(LISTINGS))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.items.length()").value(0));

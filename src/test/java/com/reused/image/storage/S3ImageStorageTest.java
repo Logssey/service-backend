@@ -17,17 +17,17 @@ import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 class S3ImageStorageTest {
 
 	@Test
-	void presignedPutRequiresOnlyContentTypeFromBrowser() {
+	void presignedPutRequiresContentTypeAndExactLengthFromBrowser() {
 		try (S3Presigner presigner = S3Presigner.builder()
 				.region(Region.AP_NORTHEAST_2)
 				.credentialsProvider(StaticCredentialsProvider.create(
 						AwsBasicCredentials.create("test-access", "test-secret")))
 				.build()) {
 			S3ImageStorage storage = new S3ImageStorage("private-test-bucket", null, presigner);
-			String url = storage.presignUpload("pending/listing-images/1/id.jpg", "image/jpeg",
+			String url = storage.presignUpload("pending/listing-images/1/id.jpg", "image/jpeg", 2048,
 					Duration.ofMinutes(5));
 			String query = URLDecoder.decode(URI.create(url).getRawQuery(), StandardCharsets.UTF_8);
-			assertThat(query).contains("X-Amz-SignedHeaders=content-type;host");
+			assertThat(query).contains("X-Amz-SignedHeaders=content-length;content-type;host");
 		}
 	}
 }

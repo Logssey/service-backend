@@ -13,7 +13,7 @@ final class UnavailableImageStorage implements ImageStorage {
 	}
 
 	@Override
-	public String presignUpload(String objectKey, String contentType, Duration ttl) {
+	public String presignUpload(String objectKey, String contentType, long contentLength, Duration ttl) {
 		throw unavailable();
 	}
 
