@@ -123,4 +123,19 @@ public class Listing {
 		this.updatedAt = now;
 	}
 
+	public void reserve(Instant changedAt) {
+		this.status = ListingStatus.RESERVED;
+		this.updatedAt = changedAt;
+	}
+
+	public void reopen(Instant changedAt) {
+		this.status = ListingStatus.ON_SALE;
+		this.updatedAt = changedAt;
+	}
+
+	public void complete(Instant changedAt) {
+		this.status = ListingStatus.COMPLETED;
+		this.updatedAt = changedAt;
+	}
+
 }
