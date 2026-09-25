@@ -425,11 +425,64 @@ class TradeIntegrationTest {
 				Long.class, listingId)).isOne();
 	}
 
+	@Test
+	@DisplayName("같은 거래의 승인과 거절이 동시에 와도 하나의 상태 전이만 성공한다")
+	void concurrentTransitionsOnSameTradeAllowOnlyOne() throws Exception {
+		Long sellerId = insertUser("판매자", UserRole.USER);
+		Long buyerId = insertUser("구매자", UserRole.USER);
+		Long listingId = insertListing(sellerId, "동시 상태 전이 상품", "ON_SALE", BASE_TIME);
+		Long tradeId = insertTrade(listingId, sellerId, buyerId, "REQUESTED", BASE_TIME);
+		insertHistory(tradeId, null, "REQUESTED", buyerId, null, BASE_TIME);
+		String authorization = bearer(sellerId, UserRole.USER);
+		CountDownLatch ready = new CountDownLatch(2);
+		CountDownLatch start = new CountDownLatch(1);
+
+		try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+			Future<Integer> accept = executor.submit(() -> acceptStatus(
+					tradeId, authorization, ready, start));
+			Future<Integer> reject = executor.submit(() -> rejectStatus(
+					tradeId, authorization, ready, start));
+			ready.await();
+			start.countDown();
+
+			assertThat(List.of(accept.get(), reject.get())).containsExactlyInAnyOrder(200, 409);
+		}
+
+		String tradeStatus = jdbcTemplate.queryForObject(
+				"SELECT status FROM trades WHERE trade_id = ?", String.class, tradeId);
+		String listingStatus = jdbcTemplate.queryForObject(
+				"SELECT status FROM listings WHERE listing_id = ?", String.class, listingId);
+		if ("ACCEPTED".equals(tradeStatus)) {
+			assertThat(listingStatus).isEqualTo("RESERVED");
+		}
+		else {
+			assertThat(tradeStatus).isEqualTo("REJECTED");
+			assertThat(listingStatus).isEqualTo("ON_SALE");
+		}
+		assertThat(jdbcTemplate.queryForObject(
+				"SELECT count(*) FROM trade_status_histories WHERE trade_id = ?",
+				Long.class, tradeId)).isEqualTo(2);
+		assertThat(jdbcTemplate.queryForObject(
+				"SELECT version FROM trades WHERE trade_id = ?", Integer.class, tradeId)).isEqualTo(1);
+	}
+
 	private int acceptStatus(Long tradeId, String authorization, CountDownLatch ready,
 			CountDownLatch start) throws Exception {
 		ready.countDown();
 		start.await();
 		return mockMvc.perform(post(TRADES + "/{tradeId}/accept", tradeId)
+					.header("Authorization", authorization))
+				.andReturn()
+				.getResponse()
+				.getStatus();
+	}
+
+	private int rejectStatus(Long tradeId, String authorization, CountDownLatch ready,
+			CountDownLatch start) throws Exception {
+		ready.countDown();
+		start.await();
+		return mockMvc.perform(json(post(TRADES + "/{tradeId}/reject", tradeId),
+					Map.of("reason", "동시 거절"))
 					.header("Authorization", authorization))
 				.andReturn()
 				.getResponse()
