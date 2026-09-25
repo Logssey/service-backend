@@ -5,7 +5,7 @@ name: CI/CD
 on:
   pull_request:
     types: [opened, synchronize, closed]
-    branches: [main, develop]
+    branches: [main]
 
 permissions:
   # AWS OIDC 토큰 발급에 필요하다. 기본값이 아니므로 명시한다.
