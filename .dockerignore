@@ -1,0 +1,13 @@
+# JAR 만 이미지에 넣는다. 나머지는 빌드 컨텍스트에서 제외한다.
+build/
+!build/libs/*.jar
+
+.gradle/
+.git/
+.github/
+src/
+gradle/
+gradlew
+gradlew.bat
+schema/
+*.md

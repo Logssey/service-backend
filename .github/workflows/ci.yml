@@ -1,0 +1,164 @@
+name: CI/CD
+
+# develop → main PR 에서 빌드하고, 머지되면 배포한다.
+# feature → develop PR 에서는 돌지 않는다.
+on:
+  pull_request:
+    types: [opened, synchronize, closed]
+    branches: [main]
+
+permissions:
+  # AWS OIDC 토큰 발급에 필요하다. 기본값이 아니므로 명시한다.
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPOSITORY: logssey/reused-api
+  GITOPS_REPO: Logssey/gitops
+  GITOPS_VALUES_PATH: apps/reused-api/values.yaml
+
+# 같은 PR 에 연속으로 push 하면 이전 실행을 취소한다.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # PR 이 열리거나 커밋이 추가되면 빌드해 ECR 에 올린다.
+  # 태그는 pr-{SHA} 이며 머지 시 리태깅된다.
+  build:
+    if: github.event.action == 'opened' || github.event.action == 'synchronize'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 테스트는 제외한다.
+      # Testcontainers 가 PostgreSQL·Redis 를 띄워 시간이 걸린다.
+      # 로컬에서 ./gradlew test 로 검증한 뒤 PR 을 올린다.
+      - name: Build
+        run: ./gradlew build -x test
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_TAG: pr-${{ github.event.pull_request.head.sha }}
+        run: |
+          docker build \
+            --label "org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+            .
+          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+  # 머지되면 pr-{SHA} 를 {SHA} 로 리태깅한다.
+  # 재빌드하지 않고 매니페스트만 복사하므로 같은 이미지가 보장된다.
+  retag:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.retag.outputs.IMAGE_TAG }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Retag image
+        id: retag
+        env:
+          SOURCE_TAG: pr-${{ github.event.pull_request.head.sha }}
+          TARGET_TAG: ${{ github.event.pull_request.head.sha }}
+        run: |
+          MANIFEST=$(aws ecr batch-get-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$SOURCE_TAG" \
+            --query 'images[].imageManifest' \
+            --output text)
+
+          if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
+            echo "소스 이미지($SOURCE_TAG)를 찾을 수 없다."
+            exit 1
+          fi
+
+          aws ecr put-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-tag "$TARGET_TAG" \
+            --image-manifest "$MANIFEST" \
+            || echo "이미 같은 다이제스트에 태그가 있다. 건너뛴다."
+
+          echo "IMAGE_TAG=$TARGET_TAG" >> "$GITHUB_OUTPUT"
+
+  # gitops 레포의 이미지 태그를 갱신한다.
+  # Argo CD 가 변경을 감지해 배포한다.
+  deploy:
+    needs: retag
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    # 승인 게이트. Settings → Environments 에서 reviewer 를 설정한다.
+    environment: production
+    steps:
+      # GitHub App 으로 gitops 레포 접근 토큰을 발급받는다.
+      # PAT 과 달리 개인 계정에 종속되지 않고 1시간 뒤 만료된다.
+      - name: Generate token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.GITOPS_APP_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          owner: Logssey
+          repositories: gitops
+
+      - name: Checkout gitops
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ steps.token.outputs.token }}
+          ref: main
+
+      - name: Update image tag
+        env:
+          IMAGE_TAG: ${{ needs.retag.outputs.image_tag }}
+        run: |
+          yq -i ".image.tag = \"$IMAGE_TAG\"" "$GITOPS_VALUES_PATH"
+          echo "=== 변경 결과 ==="
+          yq '.image' "$GITOPS_VALUES_PATH"
+
+      - name: Commit and push
+        env:
+          IMAGE_TAG: ${{ needs.retag.outputs.image_tag }}
+        run: |
+          git config user.name "logssey-gitops-bot[bot]"
+          git config user.email "logssey-gitops-bot[bot]@users.noreply.github.com"
+          git add "$GITOPS_VALUES_PATH"
+
+          if git diff --cached --quiet; then
+            echo "변경 사항이 없다."
+            exit 0
+          fi
+
+          git commit -m "cd: reused-api 이미지 태그를 ${IMAGE_TAG} 로 갱신
+
+          PR: #${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}
+          Actor: ${{ github.actor }}"
+          git push origin main
