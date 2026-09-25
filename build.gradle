@@ -29,6 +29,7 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-mail'
 	// Argon2PasswordEncoder가 Bouncy Castle 구현을 사용한다(business-rules 정책 값: argon2id).
 	implementation 'org.bouncycastle:bcprov-jdk18on:1.81'
+	implementation 'org.springframework.boot:spring-boot-starter-actuator'
 	compileOnly 'org.projectlombok:lombok'
 	runtimeOnly 'org.postgresql:postgresql'
 	annotationProcessor 'org.projectlombok:lombok'
