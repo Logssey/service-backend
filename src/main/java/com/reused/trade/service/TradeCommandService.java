@@ -24,6 +24,7 @@ import com.reused.trade.entity.TradeStatusHistory;
 import com.reused.trade.repository.TradeRepository;
 import com.reused.trade.repository.TradeStatusHistoryRepository;
 import com.reused.user.entity.User;
+import com.reused.notification.service.NotificationService;
 
 @Service
 public class TradeCommandService {
@@ -35,13 +36,16 @@ public class TradeCommandService {
 	private final ListingRepository listingRepository;
 	private final TradeRepository tradeRepository;
 	private final TradeStatusHistoryRepository historyRepository;
+	private final NotificationService notifications;
 
 	public TradeCommandService(TradeUserGuard userGuard, ListingRepository listingRepository,
-			TradeRepository tradeRepository, TradeStatusHistoryRepository historyRepository) {
+			TradeRepository tradeRepository, TradeStatusHistoryRepository historyRepository,
+			NotificationService notifications) {
 		this.userGuard = userGuard;
 		this.listingRepository = listingRepository;
 		this.tradeRepository = tradeRepository;
 		this.historyRepository = historyRepository;
+		this.notifications = notifications;
 	}
 
 	@Transactional
@@ -66,6 +70,7 @@ public class TradeCommandService {
 					Trade.request(listing.getId(), listing.getSellerId(), buyer.getId(), now));
 			historyRepository.save(TradeStatusHistory.changed(trade.getId(), null,
 					TradeStatus.REQUESTED, buyer.getId(), null, now));
+			notify(trade.getSellerId(), trade, "거래 요청", "새로운 거래 요청이 도착했습니다.");
 			return new TradeCreateResponse(trade.getId(), trade.getStatus().name());
 		}
 		catch (DataIntegrityViolationException e) {
@@ -89,6 +94,7 @@ public class TradeCommandService {
 		listing.reserve(changedAt);
 		record(trade, TradeStatus.REQUESTED, seller.getId(), null, changedAt);
 		flushTransitions();
+		notify(trade.getBuyerId(), trade, "거래 승인", "거래 요청이 승인되었습니다.");
 		return statusResponse(trade, changedAt);
 	}
 
@@ -103,6 +109,7 @@ public class TradeCommandService {
 		trade.reject(seller.getId(), changedAt);
 		record(trade, TradeStatus.REQUESTED, seller.getId(), reason(request), changedAt);
 		flushTransitions();
+		notify(trade.getBuyerId(), trade, "거래 거절", "거래 요청이 거절되었습니다.");
 		return statusResponse(trade, changedAt);
 	}
 
@@ -132,6 +139,8 @@ public class TradeCommandService {
 		trade.cancel(actor.getId(), changedAt);
 		record(trade, before, actor.getId(), reason(request), changedAt);
 		flushTransitions();
+		notify(actor.getId().equals(trade.getSellerId()) ? trade.getBuyerId() : trade.getSellerId(),
+				trade, "거래 취소", "거래가 취소되었습니다.");
 		return statusResponse(trade, changedAt);
 	}
 
@@ -153,7 +162,13 @@ public class TradeCommandService {
 		listing.complete(changedAt);
 		record(trade, TradeStatus.ACCEPTED, buyer.getId(), null, changedAt);
 		flushTransitions();
+		notify(trade.getSellerId(), trade, "거래 완료", "거래가 완료되었습니다. 상대방에게 후기를 남겨주세요.");
+		notify(trade.getBuyerId(), trade, "거래 완료", "거래가 완료되었습니다. 상대방에게 후기를 남겨주세요.");
 		return statusResponse(trade, changedAt);
+	}
+
+	private void notify(Long recipient, Trade trade, String title, String body) {
+		notifications.createFor(recipient, "TRADE_" + trade.getStatus().name(), title, body, "TRADE", trade.getId());
 	}
 
 	private Trade requireTrade(Long tradeId) {
