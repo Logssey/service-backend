@@ -1,0 +1,28 @@
+{
+  "name": "reused-chat-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/server.js",
+    "./config": "./dist/config.js"
+  },
+  "engines": {
+    "node": ">=22 <25"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test:build": "tsc -p tsconfig.test.json",
+    "test": "npm run test:build && node --test --test-concurrency=1 dist-test/test/chat-server.test.js"
+  },
+  "dependencies": {
+    "redis": "^5.0.0",
+    "socket.io": "^4.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "socket.io-client": "^4.8.0",
+    "typescript": "^5.9.0"
+  }
+}
