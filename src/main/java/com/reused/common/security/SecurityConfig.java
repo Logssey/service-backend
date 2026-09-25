@@ -41,6 +41,9 @@ public class SecurityConfig {
 								"/actuator/health/readiness").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/categories").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/listings", "/api/v1/listings/{listingId}").permitAll()
+						.requestMatchers(HttpMethod.GET, "/api/v1/community/posts",
+								"/api/v1/community/posts/{postId}",
+								"/api/v1/community/posts/{postId}/comments").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/users/nickname/check").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/users/{userId}/profile",
 								"/api/v1/users/{userId}/reviews", "/api/v1/users/{userId}/listings").permitAll()
