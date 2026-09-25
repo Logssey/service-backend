@@ -56,3 +56,9 @@ tasks.named('processTestResources') {
 tasks.named('test') {
 	useJUnitPlatform()
 }
+
+// 실행 불가능한 plain JAR 을 만들지 않는다.
+// build/libs 에 JAR 이 하나만 남아야 Dockerfile 의 와일드카드가 안전하다.
+tasks.named('jar') {
+    enabled = false
+}
