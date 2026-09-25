@@ -15,6 +15,7 @@ import com.reused.common.error.ErrorCode;
 import com.reused.common.paging.IdPage;
 import com.reused.common.security.ActorGuard;
 import com.reused.common.security.AuthPrincipal;
+import com.reused.common.security.MarketLocks;
 import com.reused.listing.query.CursorPageResponse;
 import com.reused.notification.service.NotificationService;
 import com.reused.review.dto.ReviewCreateRequest;
@@ -29,15 +30,20 @@ public class ReviewService {
     private final JdbcTemplate jdbc;
     private final ActorGuard actors;
     private final NotificationService notifications;
+    private final MarketLocks locks;
 
-    public ReviewService(JdbcTemplate jdbc, ActorGuard actors, NotificationService notifications) {
+    public ReviewService(JdbcTemplate jdbc, ActorGuard actors, NotificationService notifications, MarketLocks locks) {
         this.jdbc = jdbc;
         this.actors = actors;
         this.notifications = notifications;
+        this.locks = locks;
     }
 
     @Transactional
     public ReviewCreateResponse create(AuthPrincipal principal, ReviewCreateRequest request) {
+        if (principal == null) throw new BusinessException(ErrorCode.UNAUTHENTICATED);
+        // Load the actor only after the lock so withdrawal cannot leave a stale active JPA user.
+        locks.users(principal.userId());
         Long reviewerId = actors.user(principal, true);
         List<TradeParties> trades = jdbc.query(
                 "SELECT seller_id, buyer_id, status FROM trades WHERE trade_id = ?",

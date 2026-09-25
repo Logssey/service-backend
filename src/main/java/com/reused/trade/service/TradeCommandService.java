@@ -196,8 +196,7 @@ public class TradeCommandService {
 	private void requireAvailableCounterparty(Long userId) {
 		boolean available = Boolean.TRUE.equals(jdbc.queryForObject("""
 				SELECT EXISTS(SELECT 1 FROM users WHERE user_id = ? AND role = 'USER'
-				AND withdrawn_at IS NULL AND status <> 'WITHDRAWN'
-				AND (status <> 'SUSPENDED' OR suspended_until <= now()))
+				AND withdrawn_at IS NULL AND status = 'ACTIVE')
 				""", Boolean.class, userId));
 		if (!available) throw new BusinessException(ErrorCode.CONFLICT, "현재 거래할 수 없는 회원입니다.");
 	}

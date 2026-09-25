@@ -107,6 +107,31 @@ export APP_AUTH_COOKIE_SECURE="false"
 
 통합 테스트는 실제 PostgreSQL·Redis 컨테이너 위에서 돌고, `schema/` 스크립트를 그대로 적용한다. 외부 시스템(카카오 API, SMTP, S3)만 인터페이스 뒤의 대역으로 바꾼다.
 
+### 실시간 채팅과 전체 흐름 검증
+
+채팅 런타임은 같은 저장소의 [`chat-server/`](chat-server/README.md)에 있다. Node.js 24와 Docker가 필요하다.
+
+```bash
+cd chat-server
+npm ci
+npm run build
+npm test
+cd ..
+./gradlew test marketplaceE2E
+```
+
+`marketplaceE2E`는 채팅 소스를 빌드한 뒤 실제 HTTP 서버와 Socket.IO 서버, PostgreSQL·Redis를 연결해 가입→상품→관심→채팅·읽음·삭제→거래→후기→관리자 조치→탈퇴를 검증한다. 테스트 전용 계정과 토큰만 사용하며 운영 환경에는 요청하지 않는다. 일반 `test`와 별도 태그라 Node 의존성을 설치한 뒤 명시적으로 실행한다. 채팅 소스·실행 스크립트 변경도 테스트 입력으로 추적한다.
+
+PR에는 `Marketplace tests` 워크플로가 동일한 회귀 검증을 수행한다. 기존 이미지 빌드·배포 워크플로와 별도이며 배포 자격증명을 요구하지 않는다.
+
+### 배포 연결
+
+- Spring API는 `/api`, 별도 채팅 런타임은 `/socket.io`로 라우팅한다. WebSocket 업그레이드와 채팅 Origin 허용 목록을 설정한다.
+- 채팅의 `CHAT_API_BASE_URL`은 Spring 주소, `CHAT_REDIS_URL`은 API와 같은 Redis, `CHAT_ALLOWED_ORIGINS`는 실제 프론트 Origin이다. JWT 비밀키를 채팅 서버에 복제하지 않는다.
+- Spring의 `/actuator/health/liveness`, `/actuator/health/readiness`는 인증 없는 컨테이너 프로브용이다. 다른 관리 엔드포인트를 공개하지 않는다.
+- 기능 구현·로컬/CI 검증과 운영 배포는 구분한다. 실제 S3·SMTP·카카오 자격증명, 003 DB 적용, Socket.IO 라우팅은 운영 담당자가 해당 환경에 반영해야 한다.
+- 구현 상태의 원본은 [설계 저장소 현황](https://github.com/Logssey/service-design-docs/blob/main/05-api/backend-implementation-status.md)이다.
+
 ## 프로젝트 구조
 
 ```

@@ -58,7 +58,40 @@ tasks.named('processTestResources') {
 }
 
 tasks.named('test') {
-	useJUnitPlatform()
+	useJUnitPlatform { excludeTags 'marketplace-e2e' }
+}
+
+tasks.register('buildChat', Exec) {
+    workingDir 'chat-server'
+    inputs.dir('chat-server/src')
+    inputs.file('chat-server/tsconfig.json')
+    inputs.file('chat-server/package-lock.json')
+    inputs.file('chat-server/package.json')
+    outputs.dir('chat-server/dist')
+    doFirst {
+        if (!file('chat-server/node_modules/typescript').isDirectory()) {
+            throw new GradleException('Run npm ci in chat-server before marketplaceE2E')
+        }
+    }
+    if (System.getProperty('os.name').toLowerCase().contains('windows')) {
+        commandLine 'cmd', '/c', 'npm', 'run', 'build'
+    } else {
+        commandLine 'npm', 'run', 'build'
+    }
+}
+
+// npm ci in chat-server first. Uses real HTTP, sockets, PostgreSQL and Redis.
+tasks.register('marketplaceE2E', Test) {
+    description = 'Verify the complete marketplace with the actual Socket.IO gateway'
+    group = 'verification'
+    dependsOn tasks.named('buildChat')
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    inputs.file('scripts/marketplace-e2e.mjs')
+    inputs.file('chat-server/package-lock.json')
+    inputs.dir('chat-server/dist')
+    useJUnitPlatform { includeTags 'marketplace-e2e' }
+    shouldRunAfter tasks.named('test')
 }
 
 // 실행 불가능한 plain JAR 을 만들지 않는다.

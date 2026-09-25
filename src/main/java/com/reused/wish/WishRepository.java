@@ -22,9 +22,13 @@ class WishRepository {
 
 	Optional<LockedListing> lockListing(long listingId) {
 		return jdbc.query("""
-				SELECT wish_count, status, deleted_at FROM listings WHERE listing_id = ? FOR UPDATE
+				SELECT l.wish_count, l.status, l.deleted_at,
+				       (u.status <> 'WITHDRAWN' AND u.withdrawn_at IS NULL) AS seller_available
+				FROM listings l JOIN users u ON u.user_id = l.seller_id
+				WHERE l.listing_id = ? FOR UPDATE OF l
 				""", (rs, row) -> new LockedListing(rs.getInt("wish_count"),
-				!"HIDDEN".equals(rs.getString("status")) && rs.getTimestamp("deleted_at") == null), listingId)
+				!"HIDDEN".equals(rs.getString("status")) && rs.getTimestamp("deleted_at") == null
+				&& rs.getBoolean("seller_available")), listingId)
 				.stream().findFirst();
 	}
 
@@ -53,6 +57,7 @@ class WishRepository {
 				JOIN listings l ON l.listing_id = w.listing_id
 				JOIN users u ON u.user_id = l.seller_id
 				WHERE w.user_id = ? AND l.deleted_at IS NULL AND l.status <> 'HIDDEN'
+				  AND u.status <> 'WITHDRAWN' AND u.withdrawn_at IS NULL
 				  AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.blocker_id = w.user_id AND b.blocked_id = l.seller_id)
 				""";
 		Object[] args;

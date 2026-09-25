@@ -37,6 +37,8 @@ public class SecurityConfig {
 				.httpBasic(AbstractHttpConfigurer::disable)
 				.logout(AbstractHttpConfigurer::disable)
 				.authorizeHttpRequests(auth -> auth
+						.requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/liveness",
+								"/actuator/health/readiness").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/categories").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/listings", "/api/v1/listings/{listingId}").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/users/nickname/check").permitAll()

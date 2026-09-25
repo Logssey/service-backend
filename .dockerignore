@@ -11,3 +11,7 @@ gradlew
 gradlew.bat
 schema/
 *.md
+chat-server/
+scripts/
+.env*
+**/node_modules/

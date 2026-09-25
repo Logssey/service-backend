@@ -63,9 +63,9 @@ public class ListingQueryService {
 				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND)));
 	}
 
-	/** Returns the same detail projection after a write without counting it as a view. */
+	/** Returns the owner's edited content, including HIDDEN listings, without adding a public view. */
 	public ListingDetailResponse getListingAfterUpdate(Long id, Long ownerId) {
-		return withImages(repository.findDetail(id, ownerId)
+		return withImages(repository.findOwnerDetail(id, ownerId)
 				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND)));
 	}
 
