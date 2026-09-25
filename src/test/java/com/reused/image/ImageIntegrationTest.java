@@ -6,6 +6,8 @@ import java.io.IOException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -86,7 +88,7 @@ class ImageIntegrationTest {
 		mvc.perform(uploadRequest(suspendedId, "LISTING", "photo.jpg", "image/jpeg", 12))
 				.andExpect(status().isForbidden())
 				.andExpect(jsonPath("$.code").value("USER_SUSPENDED"));
-		mvc.perform(uploadRequest(userId, "PROFILE", "photo.jpg", "image/jpeg", 12))
+		mvc.perform(uploadRequest(userId, "UNSUPPORTED", "photo.jpg", "image/jpeg", 12))
 				.andExpect(status().isBadRequest());
 		mvc.perform(uploadRequest(userId, "LISTING", "photo.png", "image/jpeg", 12))
 				.andExpect(status().isBadRequest());
@@ -338,6 +340,108 @@ class ImageIntegrationTest {
 		MvcResult result = mvc.perform(uploadRequest(userId, "LISTING", fileName, contentType, size))
 				.andExpect(status().isCreated()).andReturn();
 		return mapper.readTree(result.getResponse().getContentAsString());
+	}
+
+	@Test
+	void profileUploadCompleteAttachReplaceResetAndCleanupUseVerifiedPrivateObjects() throws Exception {
+		Long owner = profileUser();
+		Long first = verifiedProfile(owner);
+		String firstKey = jdbc.queryForObject("SELECT object_key FROM listing_images WHERE image_id = ?", String.class, first);
+		assertThat(firstKey).startsWith("verified/profile-images/" + owner + "/");
+		mvc.perform(patch("/api/v1/users/me").header("Authorization", bearer(owner, UserRole.USER))
+				.contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("imageId", first, "bio", "새 소개"))))
+				.andExpect(status().isOk()).andExpect(jsonPath("$.profileImageUrl").value("https://storage.test/read/" + firstKey))
+				.andExpect(jsonPath("$.bio").value("새 소개"));
+		assertThat(jdbc.queryForObject("SELECT profile_image_url FROM users WHERE user_id = ?", String.class, owner)).isEqualTo(firstKey);
+		mvc.perform(patch("/api/v1/users/me").header("Authorization", bearer(owner, UserRole.USER))
+				.contentType(MediaType.APPLICATION_JSON).content("{\"nickname\":\"변경된회원\"}"))
+				.andExpect(status().isOk()).andExpect(jsonPath("$.nickname").value("변경된회원"))
+				.andExpect(jsonPath("$.profileImageUrl").value("https://storage.test/read/" + firstKey));
+		mvc.perform(get("/api/v1/users/me").header("Authorization", bearer(owner, UserRole.USER)))
+				.andExpect(status().isOk()).andExpect(jsonPath("$.profileImageUrl").value("https://storage.test/read/" + firstKey));
+		mvc.perform(delete(IMAGES + "/{id}", first).header("Authorization", bearer(owner, UserRole.USER)))
+				.andExpect(status().isConflict());
+
+		Long second = verifiedProfile(owner);
+		mvc.perform(patch("/api/v1/users/me").header("Authorization", bearer(owner, UserRole.USER))
+				.contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("imageId", second))))
+				.andExpect(status().isOk());
+		assertThat(jdbc.queryForObject("SELECT profile_user_id FROM listing_images WHERE image_id = ?", Long.class, first)).isNull();
+		assertThat(jdbc.queryForObject("SELECT profile_user_id FROM listing_images WHERE image_id = ?", Long.class, second)).isEqualTo(owner);
+		jdbc.update("UPDATE listing_images SET created_at = now() - interval '2 days'");
+		storage.deleteFailures = 1;
+		cleanupService.cleanupExpiredOrphans();
+		assertThat(statusOf(first)).isEqualTo("REJECTED");
+		assertThat(statusOf(second)).isEqualTo("VERIFIED");
+		cleanupService.cleanupExpiredOrphans();
+		assertThat(jdbc.queryForObject("SELECT count(*) FROM listing_images WHERE image_id = ?", Long.class, first)).isZero();
+		assertThat(storage.bytes(firstKey)).isNull();
+		assertThat(jdbc.queryForObject("SELECT count(*) FROM listing_images WHERE image_id = ?", Long.class, second)).isOne();
+		mvc.perform(patch("/api/v1/users/me").header("Authorization", bearer(owner, UserRole.USER))
+				.contentType(MediaType.APPLICATION_JSON).content("{\"imageId\":null}"))
+				.andExpect(status().isOk()).andExpect(jsonPath("$.profileImageUrl").doesNotExist());
+		mvc.perform(delete(IMAGES + "/{id}", second).header("Authorization", bearer(owner, UserRole.USER)))
+				.andExpect(status().isNoContent());
+	}
+
+	@Test
+	void profileAttachmentRejectsForeignListingPendingAndRejectedImagesAndListingCannotUseProfile() throws Exception {
+		Long owner = profileUser();
+		Long other = profileUser();
+		Long verified = verifiedProfile(owner);
+		mvc.perform(patch("/api/v1/users/me").header("Authorization", bearer(other, UserRole.USER))
+				.contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("imageId", verified))))
+				.andExpect(status().isForbidden());
+		Long pending = mapper.readTree(mvc.perform(uploadRequest(owner, "PROFILE", "pending.jpg", "image/jpeg", JPEG.length))
+				.andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("imageId").asLong();
+		Long listingImage = upload(owner, "listing.jpg", "image/jpeg", JPEG.length).get("imageId").asLong();
+		storage.put(storage.lastUploadKey, "image/jpeg", JPEG);
+		mvc.perform(post(IMAGES + "/{id}/complete", listingImage).header("Authorization", bearer(owner, UserRole.USER)))
+				.andExpect(status().isOk());
+		for (Long id : java.util.List.of(pending, listingImage, 99999L)) {
+			mvc.perform(patch("/api/v1/users/me").header("Authorization", bearer(owner, UserRole.USER))
+					.contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("imageId", id))))
+					.andExpect(status().isBadRequest());
+		}
+		jdbc.update("UPDATE listing_images SET status = 'REJECTED' WHERE image_id = ?", pending);
+		mvc.perform(patch("/api/v1/users/me").header("Authorization", bearer(owner, UserRole.USER))
+				.contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("imageId", pending))))
+				.andExpect(status().isBadRequest());
+		Long category = jdbc.queryForObject("SELECT min(category_id) FROM categories", Long.class);
+		mvc.perform(post("/api/v1/listings").header("Authorization", bearer(owner, UserRole.USER))
+				.contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("categoryId", category,
+						"title", "중고 상품", "description", "안전하게 거래할 상품 설명", "price", 10000,
+						"itemCondition", "USED", "tradeMethod", "BOTH", "imageIds", java.util.List.of(verified)))))
+				.andExpect(status().isBadRequest());
+		assertThat(jdbc.queryForObject("SELECT count(*) FROM listings", Long.class)).isZero();
+	}
+
+	@Test
+	void currentProfileDoesNotConsumeUnattachedQuota() throws Exception {
+		Long owner = profileUser();
+		Long imageId = verifiedProfile(owner);
+		mvc.perform(patch("/api/v1/users/me").header("Authorization", bearer(owner, UserRole.USER))
+				.contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("imageId", imageId))))
+				.andExpect(status().isOk());
+		for (int i = 0; i < 20; i++) {
+			mvc.perform(uploadRequest(owner, "PROFILE", "extra.jpg", "image/jpeg", JPEG.length)).andExpect(status().isCreated());
+		}
+		mvc.perform(uploadRequest(owner, "PROFILE", "overflow.jpg", "image/jpeg", JPEG.length)).andExpect(status().isTooManyRequests());
+	}
+
+	private Long profileUser() {
+		Long id = user("USER", "ACTIVE");
+		jdbc.update("INSERT INTO user_identities (user_id, provider, provider_user_id) VALUES (?, 'KAKAO', ?)", id, "profile-" + id);
+		return id;
+	}
+
+	private Long verifiedProfile(Long owner) throws Exception {
+		Long id = mapper.readTree(mvc.perform(uploadRequest(owner, "PROFILE", "photo.jpg", "image/jpeg", JPEG.length))
+				.andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("imageId").asLong();
+		storage.put(storage.lastUploadKey, "image/jpeg", JPEG);
+		mvc.perform(post(IMAGES + "/{id}/complete", id).header("Authorization", bearer(owner, UserRole.USER)))
+				.andExpect(status().isOk()).andExpect(jsonPath("$.status").value("VERIFIED"));
+		return id;
 	}
 
 	private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder uploadRequest(

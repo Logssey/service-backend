@@ -1,14 +1,15 @@
 package com.reused.user.service;
 
 import org.springframework.stereotype.Service;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.reused.common.error.BusinessException;
 import com.reused.common.error.ErrorCode;
 import com.reused.user.dto.response.MyProfileResponse;
-import com.reused.user.entity.User;
-import com.reused.user.entity.UserIdentity;
-import com.reused.user.repository.UserIdentityRepository;
+import com.reused.user.entity.AuthProvider;
+import com.reused.user.entity.UserRole;
+import com.reused.user.entity.UserStatus;
 import com.reused.user.repository.UserRepository;
 
 @Service
@@ -18,11 +19,11 @@ public class UserService {
 	private static final int NICKNAME_MAX = 20;
 
 	private final UserRepository userRepository;
-	private final UserIdentityRepository identityRepository;
+	private final JdbcTemplate jdbc;
 
-	public UserService(UserRepository userRepository, UserIdentityRepository identityRepository) {
+	public UserService(UserRepository userRepository, JdbcTemplate jdbc) {
 		this.userRepository = userRepository;
-		this.identityRepository = identityRepository;
+		this.jdbc = jdbc;
 	}
 
 	/**
@@ -44,12 +45,19 @@ public class UserService {
 	 */
 	@Transactional(readOnly = true)
 	public MyProfileResponse getMyProfile(Long userId) {
-		User user = userRepository.findById(userId)
-				.filter(found -> !found.isWithdrawn())
+		// JDBC returns profile edits from this transaction without a previously cached JPA user.
+		return jdbc.query("""
+				SELECT u.*, i.provider, i.email_verified_at FROM users u
+				JOIN user_identities i ON i.user_id = u.user_id
+				WHERE u.user_id = ? AND u.status <> 'WITHDRAWN' AND u.withdrawn_at IS NULL
+				""", (rs, n) -> new MyProfileResponse(rs.getLong("user_id"), rs.getString("nickname"),
+						rs.getString("profile_image_url"), rs.getString("bio"), UserRole.valueOf(rs.getString("role")),
+						UserStatus.valueOf(rs.getString("status")),
+						rs.getTimestamp("suspended_until") == null ? null : rs.getTimestamp("suspended_until").toInstant(),
+						AuthProvider.valueOf(rs.getString("provider")),
+						"LOCAL".equals(rs.getString("provider")) && rs.getTimestamp("email_verified_at") != null,
+						rs.getTimestamp("created_at").toInstant()), userId).stream().findFirst()
 				.orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHENTICATED));
-		UserIdentity identity = identityRepository.findByUserId(userId)
-				.orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHENTICATED));
-		return MyProfileResponse.of(user, identity);
 	}
 
 }

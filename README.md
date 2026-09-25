@@ -42,11 +42,15 @@ Hibernate가 테이블을 만들지 않는다(`ddl-auto=none`). `schema/` 아래
 ```bash
 docker cp schema/001_init.sql reused-postgres:/tmp/001_init.sql
 docker cp schema/002_seed_categories.sql reused-postgres:/tmp/002_seed_categories.sql
+docker cp schema/003_profile_images.sql reused-postgres:/tmp/003_profile_images.sql
 docker exec reused-postgres psql -U reused -d reused -f /tmp/001_init.sql
 docker exec reused-postgres psql -U reused -d reused -f /tmp/002_seed_categories.sql
+docker exec reused-postgres psql -U reused -d reused -f /tmp/003_profile_images.sql
 ```
 
-스키마를 다시 적용해야 하면 컨테이너를 지우고 새로 만든다. 메이저 버전이 바뀐 경우도 같다.
+기존 DB에는 이미 실행한 001·002를 재실행하지 않고 새 003만 한 번 적용한다. 데이터 초기화가 필요한 개발용 DB만 별도로 재생성한다. 운영 DB는 임의로 초기화하지 않는다.
+
+003을 아직 적용하지 않은 환경에서도 기존 LISTING 이미지 API는 동작한다. PROFILE 업로드·연결 변경은 마이그레이션이 적용될 때까지 503으로 거부한다. 애플리케이션이 운영 DDL을 자동 변경하지 않는다.
 
 ### 3. 환경변수와 기동
 
@@ -90,7 +94,10 @@ export APP_AUTH_COOKIE_SECURE="false"
 - 애플리케이션은 업로드 메타데이터의 `created_at`을 기준으로, 24시간이 지난 미연결 DB 행과 객체를 정리한다. 저장소 삭제 실패 시 행을 `REJECTED` 상태로 남겨 다음 주기에 재시도한다.
 - 한 사용자는 기본 20개의 미연결 이미지만 보유할 수 있다. 상한에 도달하면 기존 이미지를 게시글에 연결하거나 삭제할 때까지 새 업로드 URL 발급이 429로 제한된다.
 - 게시글 수정에서 빠진 이미지는 연결 해제 후 위 정리 대상이 된다. 이미 24시간이 지난 이미지는 다음 정리 주기에 삭제된다. 소프트 삭제한 게시글의 연결 이미지는 거래·감사 근거 보존을 위해 그대로 유지한다.
-- 1차 범위는 `LISTING` 이미지다. `PROFILE` 업로드 연결은 별도 후속 작업이다.
+- `LISTING`과 `PROFILE`을 모두 지원한다. PROFILE은 `pending/profile-images/` → `verified/profile-images/`로 같은 바이트 검증을 수행한다.
+- `PATCH /users/me`에 본인의 검증된 PROFILE `imageId`를 보내 연결한다. 생략하면 유지하고 명시적 `null`은 기본 이미지로 되돌린다. 임의 URL은 입력받지 않는다.
+- 프로필은 회원별 하나만 연결하고 사용 중인 이미지는 직접 삭제할 수 없다. 교체·초기화·탈퇴는 기존 연결을 해제하며 고아 정리 정책을 적용한다.
+- DB에는 내부 key를 보관하고 모든 API 응답의 프로필 이미지 필드에서는 15분 서명 URL로 변환한다. 프로필용 별도 AWS 비밀키는 필요 없다.
 
 ## 테스트
 
