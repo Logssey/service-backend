@@ -16,6 +16,10 @@ import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import com.reused.audit.api.AuditAction;
+import com.reused.audit.api.AuditEntry;
+import com.reused.audit.api.AuditLogger;
+import com.reused.audit.api.AuditTargetType;
 import com.reused.auth.config.AuthProperties;
 
 /**
@@ -46,11 +50,13 @@ public class RefreshTokenStore {
 
 	private final StringRedisTemplate redis;
 	private final AuthProperties properties;
+	private final AuditLogger auditLogger;
 	private final SecureRandom random = new SecureRandom();
 
-	public RefreshTokenStore(StringRedisTemplate redis, AuthProperties properties) {
+	public RefreshTokenStore(StringRedisTemplate redis, AuthProperties properties, AuditLogger auditLogger) {
 		this.redis = redis;
 		this.properties = properties;
+		this.auditLogger = auditLogger;
 	}
 
 	public String issue(Long userId) {
@@ -112,10 +118,15 @@ public class RefreshTokenStore {
 		}
 	}
 
+	/**
+	 * 재사용한 쪽이 탈취자인지 정상 사용자인지 알 수 없으므로 감사 기록의 행위자는 null이고 대상이 계정 주인이다.
+	 */
 	private void detectReuse(ParsedToken parsed) {
 		if (Boolean.TRUE.equals(redis.hasKey(usedKey(parsed.userId(), parsed.tokenId())))) {
 			log.warn("폐기된 Refresh Token 재사용 감지. 사용자 전체 토큰을 무효화합니다. userId={}", parsed.userId());
 			revokeAll(parsed.userId());
+			auditLogger.recordSeparately(AuditEntry.failure(AuditAction.AUTH_TOKEN_REUSE_DETECTED, null,
+					AuditTargetType.USER, parsed.userId(), null));
 		}
 	}
 

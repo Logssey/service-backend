@@ -196,6 +196,43 @@ class AuthIntegrationTest {
 				.andExpect(jsonPath("$.code").value("USER_SUSPENDED"));
 	}
 
+	@Test
+	@DisplayName("정지 종료 시각이 아직 오지 않았으면 403 USER_SUSPENDED다")
+	void timedSuspensionBlocksLogin() throws Exception {
+		signupNewUser("재현");
+		jdbcTemplate.update("UPDATE users SET status = 'SUSPENDED', suspended_until = now() + interval '1 day'");
+
+		mockMvc.perform(oauthLogin())
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.code").value("USER_SUSPENDED"));
+	}
+
+	@Test
+	@DisplayName("정지 기간이 지났으면 자동 해제 작업 전이라 상태값이 SUSPENDED여도 로그인된다")
+	void expiredSuspensionCanLogin() throws Exception {
+		signupNewUser("재현");
+		jdbcTemplate.update("UPDATE users SET status = 'SUSPENDED', suspended_until = now() - interval '1 minute'");
+
+		mockMvc.perform(oauthLogin())
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.status").value("LOGIN"))
+				.andExpect(jsonPath("$.accessToken").isNotEmpty());
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = { "탈퇴회원#1", "탈퇴한 사용자" })
+	@DisplayName("탈퇴 회원 표시용 예약 닉네임으로는 가입할 수 없다(400)")
+	void reservedNicknameIsRejected(String nickname) throws Exception {
+		String signupToken = signupTokenFromLogin();
+
+		mockMvc.perform(signup(signupToken, nickname))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("INVALID_INPUT"))
+				.andExpect(jsonPath("$.message").value("사용할 수 없는 닉네임입니다."));
+
+		assertThat(jdbcTemplate.queryForObject("SELECT count(*) FROM users", Long.class)).isZero();
+	}
+
 	@ParameterizedTest
 	@ValueSource(strings = { "google", "local", "KAKAO" })
 	@DisplayName("지원하지 않는 provider는 404 NOT_FOUND이고 제공자 API를 호출하지 않는다")

@@ -55,6 +55,10 @@ public class SecurityConfig {
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/email/login").permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/password/reset").permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/password/reset/confirm").permitAll()
+						// 공개 공지 조회.
+						.requestMatchers(HttpMethod.GET, "/api/v1/notices", "/api/v1/notices/*").permitAll()
+						// 관리자 API(A·B 공통). 토큰의 역할은 발급 시점 값이라 AdminAccessInterceptor가 DB로 한 번 더 확인한다.
+						.requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
 						.anyRequest().authenticated())
 				.exceptionHandling(handler -> handler
 						.authenticationEntryPoint(authenticationEntryPoint)

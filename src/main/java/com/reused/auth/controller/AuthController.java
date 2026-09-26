@@ -18,6 +18,8 @@ import com.reused.auth.dto.response.OAuthLoginResponse;
 import com.reused.auth.service.AuthService;
 import com.reused.auth.service.RefreshTokenCookieFactory;
 import com.reused.auth.token.InvalidTokenException;
+import com.reused.common.security.AuthPrincipal;
+import com.reused.common.security.AuthUser;
 
 import jakarta.validation.Valid;
 
@@ -59,9 +61,9 @@ public class AuthController {
 	}
 
 	@PostMapping("/logout")
-	public ResponseEntity<Void> logout(
+	public ResponseEntity<Void> logout(@AuthUser AuthPrincipal principal,
 			@CookieValue(name = "${app.auth.cookie.name}", required = false) String refreshToken) {
-		authService.logout(refreshToken);
+		authService.logout(principal.userId(), refreshToken);
 		return ResponseEntity.noContent()
 				.header(HttpHeaders.SET_COOKIE, cookieFactory.expired().toString())
 				.build();

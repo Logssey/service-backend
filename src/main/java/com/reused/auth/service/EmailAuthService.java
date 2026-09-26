@@ -9,10 +9,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
+import com.reused.audit.api.AuditLogger;
 import com.reused.auth.code.AuthCodeStore;
 import com.reused.auth.code.CodePurpose;
 import com.reused.auth.code.LoginAttemptLimiter;
@@ -25,6 +26,7 @@ import com.reused.auth.token.JwtTokenProvider;
 import com.reused.auth.token.RefreshTokenStore;
 import com.reused.common.error.BusinessException;
 import com.reused.common.error.ErrorCode;
+import com.reused.common.tx.AfterCommit;
 import com.reused.user.entity.AuthProvider;
 import com.reused.user.entity.NotificationSettings;
 import com.reused.user.entity.User;
@@ -32,6 +34,7 @@ import com.reused.user.entity.UserIdentity;
 import com.reused.user.repository.NotificationSettingsRepository;
 import com.reused.user.repository.UserIdentityRepository;
 import com.reused.user.repository.UserRepository;
+import com.reused.user.service.NicknamePolicy;
 
 /**
  * 자체 이메일·비밀번호 계정(ADR-016, ADR-017).
@@ -39,6 +42,11 @@ import com.reused.user.repository.UserRepository;
  * <p>계정 존재 여부가 응답으로 드러나지 않도록 한다(NFR-AUTH-018).
  * 로그인 실패는 이메일 미존재와 비밀번호 불일치를 같은 코드·메시지로 응답하고,
  * 재설정 요청은 계정 유무와 무관하게 204다.
+ *
+ * <p>감사 기록(recordSeparately)은 트랜잭션이 끝나 커넥션을 돌려준 뒤에 쓴다. 트랜잭션 안(커밋 뒤 콜백 포함)에서
+ * 쓰면 요청 하나가 커넥션을 두 개 잡는다. 공개 엔드포인트라 동시 요청이 풀 크기만큼 몰리면 모두 두 번째 커넥션을
+ * 기다리며 풀이 멈추고, 대기 시간이 지나면 실패 기록이 사라진다. 그래서 로그인에는 트랜잭션을 두지 않고,
+ * 가입·재설정은 {@link TransactionTemplate}으로 DB 작업만 감싼다.
  */
 @Service
 public class EmailAuthService {
@@ -47,6 +55,8 @@ public class EmailAuthService {
 
 	static final String LOGIN_FAILED_MESSAGE = "이메일 또는 비밀번호가 올바르지 않습니다.";
 	static final String INVALID_CODE_MESSAGE = "인증 코드가 올바르지 않거나 만료되었습니다.";
+	static final String CURRENT_PASSWORD_MISMATCH_MESSAGE = "현재 비밀번호가 올바르지 않습니다.";
+	static final String PASSWORD_CHANGE_RATE_LIMITED_MESSAGE = "비밀번호 확인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.";
 
 	private final UserRepository userRepository;
 	private final UserIdentityRepository identityRepository;
@@ -57,6 +67,8 @@ public class EmailAuthService {
 	private final AuthCodeStore codeStore;
 	private final LoginAttemptLimiter loginAttemptLimiter;
 	private final AuthMailSender mailSender;
+	private final AuditLogger auditLogger;
+	private final TransactionTemplate transaction;
 
 	/** 존재하지 않는 계정의 로그인에도 해시 검증 비용을 들여 응답 시간 차이를 없앤다(NFR-AUTH-018). */
 	private final String dummyPasswordHash;
@@ -64,7 +76,8 @@ public class EmailAuthService {
 	public EmailAuthService(UserRepository userRepository, UserIdentityRepository identityRepository,
 			NotificationSettingsRepository notificationSettingsRepository, PasswordEncoder passwordEncoder,
 			JwtTokenProvider tokenProvider, RefreshTokenStore refreshTokenStore, AuthCodeStore codeStore,
-			LoginAttemptLimiter loginAttemptLimiter, AuthMailSender mailSender) {
+			LoginAttemptLimiter loginAttemptLimiter, AuthMailSender mailSender, AuditLogger auditLogger,
+			PlatformTransactionManager transactionManager) {
 		this.userRepository = userRepository;
 		this.identityRepository = identityRepository;
 		this.notificationSettingsRepository = notificationSettingsRepository;
@@ -74,27 +87,43 @@ public class EmailAuthService {
 		this.codeStore = codeStore;
 		this.loginAttemptLimiter = loginAttemptLimiter;
 		this.mailSender = mailSender;
+		this.auditLogger = auditLogger;
+		this.transaction = new TransactionTemplate(transactionManager);
 		this.dummyPasswordHash = passwordEncoder.encode(UUID.randomUUID().toString());
 	}
 
 	/**
 	 * 단일 요청으로 가입을 확정하고 로그인 상태로 전환한다. 소유 확인 메일은 커밋 후 1회 자동 발송한다.
 	 * 메일 발송 실패는 가입을 되돌리지 않는다 — 사용자가 재발송으로 복구할 수 있다.
+	 *
+	 * <p>트랜잭션은 계정 행 생성과 토큰 발급까지다. 비밀번호 해시는 그 전에, 감사 기록과 메일은 그 뒤에 한다.
+	 * 호출자 트랜잭션이 없으면(컨트롤러 경로) {@link AfterCommit}이 바로 실행하고, 있으면 그 커밋 뒤로 미룬다.
 	 */
-	@Transactional
 	public AuthResult signup(EmailSignupRequest request) {
+		NicknamePolicy.validate(request.nickname());
 		String email = normalizeEmail(request.email());
+		String passwordHash = passwordEncoder.encode(request.password());
 
+		CreatedAccount account = transaction.execute(status -> createAccount(request.nickname(), email, passwordHash));
+
+		// 새 users 행은 커밋 전이라 별도 트랜잭션에서 FK로 볼 수 없다. 커밋된 가입만 기록한다.
+		AfterCommit.run(() -> auditLogger.recordSeparately(
+				AuthAuditEntries.signedUp(account.userId(), AuthProvider.LOCAL)));
+		AfterCommit.run(() -> sendVerificationQuietly(account.identityId(), email));
+		return account.result();
+	}
+
+	private CreatedAccount createAccount(String nickname, String email, String passwordHash) {
 		if (identityRepository.existsByProviderAndEmail(AuthProvider.LOCAL, email)) {
 			throw new BusinessException(ErrorCode.CONFLICT, "이미 가입된 이메일입니다.");
 		}
-		if (userRepository.existsByNickname(request.nickname())) {
+		if (userRepository.existsByNickname(nickname)) {
 			throw new BusinessException(ErrorCode.CONFLICT, "이미 사용 중인 닉네임입니다.");
 		}
 
 		User user;
 		try {
-			user = userRepository.saveAndFlush(User.signUp(request.nickname(), Instant.now()));
+			user = userRepository.saveAndFlush(User.signUp(nickname, Instant.now()));
 		}
 		catch (DataIntegrityViolationException e) {
 			throw new BusinessException(ErrorCode.CONFLICT, "이미 사용 중인 닉네임입니다.", e);
@@ -102,8 +131,7 @@ public class EmailAuthService {
 
 		UserIdentity identity;
 		try {
-			identity = identityRepository.saveAndFlush(
-					UserIdentity.local(user, email, passwordEncoder.encode(request.password())));
+			identity = identityRepository.saveAndFlush(UserIdentity.local(user, email, passwordHash));
 		}
 		catch (DataIntegrityViolationException e) {
 			// 중복 검사와 INSERT 사이의 경쟁 조건. 최종 판정은 부분 UNIQUE 인덱스다.
@@ -111,46 +139,64 @@ public class EmailAuthService {
 		}
 		notificationSettingsRepository.save(NotificationSettings.defaultsFor(user.getId()));
 
-		Long identityId = identity.getId();
-		afterCommit(() -> sendVerificationQuietly(identityId, email));
-
-		return issueTokens(user);
+		// 토큰 발급(Redis)이 실패하면 가입도 되돌린다. 계정만 생기고 로그인되지 않는 상태를 남기지 않는다.
+		return new CreatedAccount(user.getId(), identity.getId(), issueTokens(user));
 	}
 
 	/**
 	 * 이메일 미존재와 비밀번호 불일치는 같은 401이다. 반복 실패는 계정 기준으로 제한한다(NFR-AUTH-019).
+	 *
+	 * <p>성공·실패를 모두 감사 로그에 남긴다(FR-LOG-001). 트랜잭션을 두지 않는다. 인증 수단은 회원과 함께 한 번에 읽고,
+	 * 해시 검증과 감사 기록은 커넥션을 쥐지 않은 채 한다.
+	 * 실패 사유는 감사 로그에만 구분해 남고 응답은 여전히 구분되지 않는다. 이메일은 기록하지 않는다.
 	 */
-	@Transactional(readOnly = true)
 	public AuthResult login(EmailLoginRequest request) {
 		String email = normalizeEmail(request.email());
-		UserIdentity identity = identityRepository.findByProviderAndEmail(AuthProvider.LOCAL, email).orElse(null);
+		UserIdentity identity = identityRepository.findWithUserByProviderAndEmail(AuthProvider.LOCAL, email)
+				.orElse(null);
 
 		if (identity == null) {
 			passwordEncoder.matches(request.password(), dummyPasswordHash);
+			recordLoginFailure(null, AuthAuditEntries.REASON_UNKNOWN_ACCOUNT);
 			throw loginFailed();
 		}
 
-		loginAttemptLimiter.checkAllowed(identity.getId());
+		Long userId = identity.getUser().getId();
+		// 시도는 검증 전에 센다. 실패하면 센 그대로 남고, 성공하면 초기화한다.
+		try {
+			loginAttemptLimiter.acquire(identity.getId());
+		}
+		catch (BusinessException e) {
+			recordLoginFailure(userId, AuthAuditEntries.REASON_RATE_LIMITED);
+			throw e;
+		}
 		if (!passwordEncoder.matches(request.password(), identity.getPasswordHash())) {
-			loginAttemptLimiter.recordFailure(identity.getId());
+			recordLoginFailure(userId, AuthAuditEntries.REASON_BAD_CREDENTIALS);
 			throw loginFailed();
 		}
 		loginAttemptLimiter.reset(identity.getId());
 
 		User user = identity.getUser();
 		if (user.isWithdrawn()) {
+			recordLoginFailure(userId, AuthAuditEntries.REASON_WITHDRAWN);
 			throw loginFailed();
 		}
-		if (user.isSuspended()) {
+		// 기간이 지난 정지는 자동 해제 작업이 상태를 되돌리기 전이어도 로그인을 허용한다.
+		if (user.isSuspendedAt(Instant.now())) {
+			recordLoginFailure(userId, AuthAuditEntries.REASON_SUSPENDED);
 			throw new BusinessException(ErrorCode.USER_SUSPENDED);
 		}
-		return issueTokens(user);
+		AuthResult result = issueTokens(user);
+		auditLogger.recordSeparately(AuthAuditEntries.loginSucceeded(userId, AuthProvider.LOCAL));
+		return result;
 	}
 
 	/**
 	 * 소유 확인 코드 재발송. 대상 주소는 토큰 사용자의 LOCAL 인증 수단이며 바디로 주소를 받지 않는다.
+	 *
+	 * <p>트랜잭션을 두지 않는다({@link #requestPasswordReset}과 같다). 인증 수단은 기본 컬럼만 쓰므로 조회 한 번으로 끝나고,
+	 * Redis 기록과 동기 SMTP 발송(단계마다 최대 5초)은 커넥션을 쥐지 않은 채 한다.
 	 */
-	@Transactional(readOnly = true)
 	public void resendVerification(Long userId) {
 		UserIdentity identity = identityRepository.findByUserId(userId)
 				.orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHENTICATED));
@@ -193,23 +239,88 @@ public class EmailAuthService {
 
 	/**
 	 * 성공하면 해당 사용자의 Refresh Token을 전부 폐기한다(NFR-AUTH-016). 다른 기기의 세션이 함께 끊긴다.
+	 *
+	 * <p>트랜잭션은 비밀번호 변경까지다. 감사 기록과 Redis 작업은 커밋 뒤에 한다({@link #signup}과 같다).
 	 */
-	@Transactional
 	public void confirmPasswordReset(PasswordResetConfirmRequest request) {
 		String email = normalizeEmail(request.email());
+		ResetAccount account = transaction.execute(status -> resetPassword(email, request));
+
+		// 감사 기록은 스스로 실패를 삼키므로 먼저 등록한다. Redis 작업이 실패해도 기록은 남는다.
+		AfterCommit.run(() -> auditLogger.recordSeparately(AuthAuditEntries.passwordReset(account.userId())));
+		AfterCommit.run(() -> {
+			refreshTokenStore.revokeAll(account.userId());
+			loginAttemptLimiter.reset(account.identityId());
+		});
+	}
+
+	/**
+	 * 로그인한 LOCAL 계정의 비밀번호 변경. 성공하면 이 회원의 Refresh Token을 전부 폐기하고 새 토큰은 주지 않는다
+	 * (NFR-AUTH-016, 비밀번호 변경 명세 "204 본문 없음"). 현재 기기도 Access Token이 만료되면 다시 로그인한다.
+	 *
+	 * <p>현재 비밀번호 추측을 로그인과 같은 제한기({@link LoginAttemptLimiter}, 계정 기준 10분당 5회)로 막는다.
+	 * 문서에 없는 429다. 시도는 검증 전에 로그인과 함께 센다(동시 요청으로 한도를 넘지 못한다). 성공하면 초기화한다.
+	 *
+	 * <p>트랜잭션은 해시 교체 한 번이다. 해시 검증·계산과 감사 기록은 커넥션을 쥐지 않은 채 한다({@link #login}과 같은 이유).
+	 * 이용정지 회원도 변경할 수 있다(문서에 403 없음).
+	 *
+	 * @throws BusinessException UNAUTHENTICATED 없음·탈퇴·인증 수단 없음·현재 비밀번호 불일치,
+	 *         CONFLICT 소셜 계정, RATE_LIMITED 불일치가 한도에 도달함
+	 */
+	public void changePassword(Long userId, String currentPassword, String newPassword) {
+		userRepository.findById(userId)
+				.filter(user -> !user.isWithdrawn())
+				.orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHENTICATED));
+		UserIdentity identity = identityRepository.findByUserId(userId)
+				.orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHENTICATED));
+		// 입력을 고쳐도 성공할 수 없는 요청이라 비밀번호 확인보다 먼저 409로 끝낸다(비밀번호 변경 명세).
+		if (!identity.isLocal()) {
+			throw new BusinessException(ErrorCode.CONFLICT, "소셜 계정은 변경할 비밀번호가 없습니다.");
+		}
+
+		Long identityId = identity.getId();
+		try {
+			loginAttemptLimiter.acquire(identityId);
+		}
+		catch (BusinessException e) {
+			auditLogger.recordSeparately(
+					AuthAuditEntries.passwordChangeFailed(userId, AuthAuditEntries.REASON_RATE_LIMITED));
+			throw new BusinessException(ErrorCode.RATE_LIMITED, PASSWORD_CHANGE_RATE_LIMITED_MESSAGE, e);
+		}
+		if (!passwordEncoder.matches(currentPassword, identity.getPasswordHash())) {
+			auditLogger.recordSeparately(
+					AuthAuditEntries.passwordChangeFailed(userId, AuthAuditEntries.REASON_BAD_CREDENTIALS));
+			throw new BusinessException(ErrorCode.UNAUTHENTICATED, CURRENT_PASSWORD_MISMATCH_MESSAGE);
+		}
+
+		String newPasswordHash = passwordEncoder.encode(newPassword);
+		transaction.executeWithoutResult(status -> replacePasswordHash(identityId, newPasswordHash));
+
+		// 감사 기록은 스스로 실패를 삼키므로 먼저 등록한다. Redis 작업이 실패해도 기록은 남는다.
+		AfterCommit.run(() -> auditLogger.recordSeparately(AuthAuditEntries.passwordChanged(userId)));
+		AfterCommit.run(() -> {
+			refreshTokenStore.revokeAll(userId);
+			loginAttemptLimiter.reset(identityId);
+		});
+	}
+
+	/**
+	 * 확인한 뒤 교체하기 전에 탈퇴가 커밋되었으면 인증 수단 행이 없다. 탈퇴 회원과 같은 401이다.
+	 */
+	private void replacePasswordHash(Long identityId, String newPasswordHash) {
+		UserIdentity identity = identityRepository.findById(identityId)
+				.orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHENTICATED));
+		identity.changePasswordHash(newPasswordHash);
+	}
+
+	private ResetAccount resetPassword(String email, PasswordResetConfirmRequest request) {
 		// 계정이 없으면 코드 불일치와 같은 400이다. 존재 여부를 드러내지 않는다.
 		UserIdentity identity = identityRepository.findByProviderAndEmail(AuthProvider.LOCAL, email)
 				.orElseThrow(() -> new BusinessException(ErrorCode.INVALID_INPUT, INVALID_CODE_MESSAGE));
 
 		codeStore.consume(CodePurpose.RESET, identity.getId(), request.code());
 		identity.changePasswordHash(passwordEncoder.encode(request.newPassword()));
-
-		Long userId = identity.getUser().getId();
-		Long identityId = identity.getId();
-		afterCommit(() -> {
-			refreshTokenStore.revokeAll(userId);
-			loginAttemptLimiter.reset(identityId);
-		});
+		return new ResetAccount(identity.getUser().getId(), identity.getId());
 	}
 
 	private AuthResult issueTokens(User user) {
@@ -229,21 +340,8 @@ public class EmailAuthService {
 		}
 	}
 
-	/**
-	 * 트랜잭션이 커밋된 뒤 실행한다. 롤백된 가입에 메일이 나가거나, 커밋되지 않은 비밀번호 변경보다
-	 * 토큰 폐기가 먼저 일어나는 것을 막는다. 트랜잭션 밖이면 즉시 실행한다.
-	 */
-	private static void afterCommit(Runnable action) {
-		if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-			action.run();
-			return;
-		}
-		TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-			@Override
-			public void afterCommit() {
-				action.run();
-			}
-		});
+	private void recordLoginFailure(Long userId, String reason) {
+		auditLogger.recordSeparately(AuthAuditEntries.loginFailed(userId, AuthProvider.LOCAL, reason));
 	}
 
 	private static BusinessException loginFailed() {
@@ -258,6 +356,14 @@ public class EmailAuthService {
 	}
 
 	public record AuthResult(AuthTokenResponse response, String refreshToken) {
+	}
+
+	/** 가입 트랜잭션의 결과. 커밋 뒤 작업(감사·메일)이 식별자를 쓴다. */
+	private record CreatedAccount(Long userId, Long identityId, AuthResult result) {
+	}
+
+	/** 재설정 트랜잭션의 결과. 커밋 뒤 작업(감사·토큰 폐기·시도 횟수 초기화)이 쓴다. */
+	private record ResetAccount(Long userId, Long identityId) {
 	}
 
 }

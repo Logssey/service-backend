@@ -17,7 +17,9 @@ import com.reused.user.dto.response.NicknameAvailabilityResponse;
 import com.reused.user.service.UserService;
 import com.reused.user.service.UserProfileLifecycleService;
 import com.reused.user.dto.request.ProfileUpdateRequest;
+import com.reused.user.dto.request.PasswordChangeRequest;
 import com.reused.auth.service.RefreshTokenCookieFactory;
+import com.reused.auth.service.EmailAuthService;
 import jakarta.validation.Valid;
 
 @RestController
@@ -27,11 +29,14 @@ public class UserController {
 	private final UserService userService;
 	private final UserProfileLifecycleService lifecycle;
 	private final RefreshTokenCookieFactory cookies;
+	private final EmailAuthService emailAuthService;
 
-	public UserController(UserService userService, UserProfileLifecycleService lifecycle, RefreshTokenCookieFactory cookies) {
+	public UserController(UserService userService, UserProfileLifecycleService lifecycle, RefreshTokenCookieFactory cookies,
+			EmailAuthService emailAuthService) {
 		this.userService = userService;
 		this.lifecycle = lifecycle;
 		this.cookies = cookies;
+		this.emailAuthService = emailAuthService;
 	}
 
 	@PatchMapping("/me")
@@ -43,6 +48,13 @@ public class UserController {
 	public ResponseEntity<Void> withdraw(@AuthUser AuthPrincipal principal) {
 		lifecycle.withdraw(principal);
 		return ResponseEntity.noContent().header(HttpHeaders.SET_COOKIE, cookies.expired().toString()).build();
+	}
+
+	/** PATCH /users/me/password — USER. 성공하면 모든 Refresh Token이 폐기되고 새 토큰은 없다. 프론트는 다시 로그인시킨다. */
+	@PatchMapping("/me/password")
+	public ResponseEntity<Void> changePassword(@AuthUser AuthPrincipal principal, @Valid @RequestBody PasswordChangeRequest request) {
+		emailAuthService.changePassword(principal.userId(), request.currentPassword(), request.newPassword());
+		return ResponseEntity.noContent().build();
 	}
 
 	/** GET /users/me — USER */
