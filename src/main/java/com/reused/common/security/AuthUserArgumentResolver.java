@@ -26,6 +26,7 @@ public class AuthUserArgumentResolver implements HandlerMethodArgumentResolver {
 	public Object resolveArgument(MethodParameter parameter, ModelAndViewContainer mavContainer,
 			NativeWebRequest webRequest, WebDataBinderFactory binderFactory) {
 		// 인증이 필요 없는 엔드포인트에서도 쓸 수 있도록 Optional 파라미터는 null을 허용한다.
+		// Spring 7의 isOptional()은 JSpecify @Nullable(TYPE_USE)도 인식한다(OptionalPrincipalIntegrationTest).
 		if (parameter.isOptional()) {
 			return currentUserProvider.current().orElse(null);
 		}

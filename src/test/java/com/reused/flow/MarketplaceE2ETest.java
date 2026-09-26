@@ -48,7 +48,7 @@ class MarketplaceE2ETest {
             assertThat(jdbc.queryForObject("SELECT count(*) FROM trades WHERE status='COMPLETED'",Long.class)).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM trades WHERE status='CANCELED'",Long.class)).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM reviews",Long.class)).isEqualTo(2);
-            assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_logs",Long.class)).isEqualTo(2);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_logs WHERE target_type = 'LISTING'",Long.class)).isEqualTo(2);
         } finally { if (process.isAlive()) process.destroyForcibly(); }
     }
 }

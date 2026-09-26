@@ -7,6 +7,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -66,6 +68,16 @@ class NicknameCheckIntegrationTest {
 				.andExpect(status().isBadRequest());
 		mockMvc.perform(get("/api/v1/users/nickname/check"))
 				.andExpect(status().isBadRequest());
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = { "탈퇴회원#5", "탈퇴한 사용자" })
+	@DisplayName("탈퇴 회원 표시용 예약어는 쓰이지 않았어도 400이다(가입에서도 같은 400)")
+	void rejectsReservedNicknames(String nickname) throws Exception {
+		mockMvc.perform(get("/api/v1/users/nickname/check").param("nickname", nickname))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("INVALID_INPUT"))
+				.andExpect(jsonPath("$.message").value("사용할 수 없는 닉네임입니다."));
 	}
 
 }

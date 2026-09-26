@@ -2,6 +2,7 @@ package com.reused.user.repository;
 
 import java.util.Optional;
 
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import com.reused.user.entity.AuthProvider;
@@ -9,12 +10,23 @@ import com.reused.user.entity.UserIdentity;
 
 public interface UserIdentityRepository extends JpaRepository<UserIdentity, Long> {
 
-	Optional<UserIdentity> findByProviderAndProviderUserId(AuthProvider provider, String providerUserId);
+	/**
+	 * 회원을 함께 읽는다. 로그인은 트랜잭션 없이 {@code getUser()}를 쓴다({@code AuthService#login}).
+	 */
+	@EntityGraph(attributePaths = "user")
+	Optional<UserIdentity> findWithUserByProviderAndProviderUserId(AuthProvider provider, String providerUserId);
 
 	/**
 	 * 이메일은 LOCAL 범위에서만 유일하다(부분 UNIQUE 인덱스). provider를 함께 조건에 넣어야 한다.
 	 */
 	Optional<UserIdentity> findByProviderAndEmail(AuthProvider provider, String email);
+
+	/**
+	 * {@link #findByProviderAndEmail}과 같고 회원을 함께 읽는다. 로그인은 트랜잭션 없이 {@code getUser()}를 쓴다
+	 * ({@code EmailAuthService#login}).
+	 */
+	@EntityGraph(attributePaths = "user")
+	Optional<UserIdentity> findWithUserByProviderAndEmail(AuthProvider provider, String email);
 
 	boolean existsByProviderAndEmail(AuthProvider provider, String email);
 

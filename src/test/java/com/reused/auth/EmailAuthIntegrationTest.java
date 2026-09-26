@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willAnswer;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -13,7 +14,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import jakarta.servlet.http.Cookie;
 
@@ -33,13 +36,18 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import com.reused.TestcontainersConfiguration;
 import com.reused.auth.client.OAuthProviderClient;
+import com.reused.auth.dto.request.EmailLoginRequest;
 import com.reused.auth.mail.AuthMailSender;
+import com.reused.auth.service.EmailAuthService;
+import com.reused.common.error.ErrorCode;
+import com.reused.support.ConcurrentAttempts;
 import com.reused.user.entity.AuthProvider;
 
 /**
@@ -67,6 +75,9 @@ class EmailAuthIntegrationTest {
 
 	@Autowired
 	private StringRedisTemplate redisTemplate;
+
+	@Autowired
+	private EmailAuthService emailAuthService;
 
 	@MockitoBean
 	private AuthMailSender mailSender;
@@ -204,6 +215,36 @@ class EmailAuthIntegrationTest {
 	}
 
 	@Test
+	@DisplayName("틀린 비밀번호 10건이 동시에 들어와도 검증까지 가는 것은 한도 5건뿐이고 나머지는 429다(시도를 검증 전에 센다)")
+	void concurrentLoginGuessesCannotExceedLimit() throws Exception {
+		signupUser();
+
+		List<ErrorCode> outcomes = ConcurrentAttempts.run(10,
+				() -> emailAuthService.login(new EmailLoginRequest(EMAIL, "wrong-password!")));
+
+		assertThat(outcomes).filteredOn(code -> code == ErrorCode.UNAUTHENTICATED).hasSize(5);
+		assertThat(outcomes).filteredOn(code -> code == ErrorCode.RATE_LIMITED).hasSize(5);
+		mockMvc.perform(login(EMAIL, PASSWORD))
+				.andExpect(status().isTooManyRequests())
+				.andExpect(jsonPath("$.code").value("RATE_LIMITED"));
+	}
+
+	@Test
+	@DisplayName("한도 안에서 성공하면 시도 횟수가 초기화되어 다시 5회를 쓸 수 있다")
+	void successfulLoginResetsAttempts() throws Exception {
+		signupUser();
+		for (int i = 0; i < 4; i++) {
+			mockMvc.perform(login(EMAIL, "wrong-password!")).andExpect(status().isUnauthorized());
+		}
+		mockMvc.perform(login(EMAIL, PASSWORD)).andExpect(status().isOk());
+
+		for (int i = 0; i < 5; i++) {
+			mockMvc.perform(login(EMAIL, "wrong-password!")).andExpect(status().isUnauthorized());
+		}
+		mockMvc.perform(login(EMAIL, PASSWORD)).andExpect(status().isTooManyRequests());
+	}
+
+	@Test
 	@DisplayName("이용정지 계정은 403 USER_SUSPENDED다")
 	void suspendedUserCannotLogin() throws Exception {
 		signupUser();
@@ -212,6 +253,43 @@ class EmailAuthIntegrationTest {
 		mockMvc.perform(login(EMAIL, PASSWORD))
 				.andExpect(status().isForbidden())
 				.andExpect(jsonPath("$.code").value("USER_SUSPENDED"));
+	}
+
+	@Test
+	@DisplayName("정지 종료 시각이 아직 오지 않았으면 403 USER_SUSPENDED다")
+	void timedSuspensionBlocksLogin() throws Exception {
+		signupUser();
+		jdbcTemplate.update("UPDATE users SET status = 'SUSPENDED', suspended_until = now() + interval '1 day'");
+
+		mockMvc.perform(login(EMAIL, PASSWORD))
+				.andExpect(status().isForbidden())
+				.andExpect(jsonPath("$.code").value("USER_SUSPENDED"));
+	}
+
+	@Test
+	@DisplayName("정지 기간이 지났으면 자동 해제 작업 전이라 상태값이 SUSPENDED여도 로그인된다")
+	void expiredSuspensionCanLogin() throws Exception {
+		signupUser();
+		jdbcTemplate.update("UPDATE users SET status = 'SUSPENDED', suspended_until = now() - interval '1 minute'");
+
+		mockMvc.perform(login(EMAIL, PASSWORD))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.accessToken").isNotEmpty());
+	}
+
+	@Test
+	@DisplayName("탈퇴 회원 표시용 예약 닉네임으로는 가입할 수 없다(400)")
+	void reservedNicknameIsRejected() throws Exception {
+		mockMvc.perform(signup(EMAIL, PASSWORD, "탈퇴회원#1"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("INVALID_INPUT"))
+				.andExpect(jsonPath("$.message").value("사용할 수 없는 닉네임입니다."));
+		mockMvc.perform(signup(EMAIL, PASSWORD, "탈퇴한 사용자"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.message").value("사용할 수 없는 닉네임입니다."));
+
+		assertThat(jdbcTemplate.queryForObject("SELECT count(*) FROM users", Long.class)).isZero();
+		verify(mailSender, never()).sendVerificationCode(any(), any());
 	}
 
 	// --- 이메일 소유 확인 ---
@@ -279,6 +357,22 @@ class EmailAuthIntegrationTest {
 		mockMvc.perform(resendVerification(tokens)).andExpect(status().isNoContent());
 
 		verify(mailSender, times(2)).sendVerificationCode(eq(EMAIL), any());
+	}
+
+	@Test
+	@DisplayName("재발송 메일은 트랜잭션 밖에서 보낸다. 동기 SMTP를 기다리는 동안 DB 커넥션을 쥐지 않는다")
+	void resendSendsMailOutsideTransaction() throws Exception {
+		Tokens tokens = signupUser();
+		clearResendGap();
+		List<Boolean> transactionActiveAtSend = new CopyOnWriteArrayList<>();
+		willAnswer(invocation -> {
+			transactionActiveAtSend.add(TransactionSynchronizationManager.isActualTransactionActive());
+			return null;
+		}).given(mailSender).sendVerificationCode(eq(EMAIL), any());
+
+		mockMvc.perform(resendVerification(tokens)).andExpect(status().isNoContent());
+
+		assertThat(transactionActiveAtSend).containsExactly(false);
 	}
 
 	@Test

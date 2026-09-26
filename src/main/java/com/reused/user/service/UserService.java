@@ -15,9 +15,6 @@ import com.reused.user.repository.UserRepository;
 @Service
 public class UserService {
 
-	private static final int NICKNAME_MIN = 2;
-	private static final int NICKNAME_MAX = 20;
-
 	private final UserRepository userRepository;
 	private final JdbcTemplate jdbc;
 
@@ -29,13 +26,12 @@ public class UserService {
 	/**
 	 * 닉네임은 프로필에 공개되는 값이라 존재 여부를 노출해도 계정 열거 문제가 없다.
 	 * 이메일에는 같은 확인 API를 두지 않는다(NFR-AUTH-018).
+	 *
+	 * <p>예약어는 쓰이지 않았더라도 false가 아니라 400이다. 가입에서도 같은 400이 나기 때문이다.
 	 */
 	@Transactional(readOnly = true)
 	public boolean isNicknameAvailable(String nickname) {
-		if (nickname == null || nickname.isBlank()
-				|| nickname.length() < NICKNAME_MIN || nickname.length() > NICKNAME_MAX) {
-			throw new BusinessException(ErrorCode.INVALID_INPUT, "닉네임은 2~20자여야 합니다.");
-		}
+		NicknamePolicy.validate(nickname);
 		return !userRepository.existsByNickname(nickname);
 	}
 

@@ -2,6 +2,9 @@ package com.reused.auth.client;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
+import org.springframework.boot.http.client.HttpClientSettings;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
@@ -23,8 +26,11 @@ import com.reused.user.entity.AuthProvider;
  * <p>오류 매핑은 카카오 로그인 명세를 따른다.
  * 인가 코드가 잘못되면(카카오가 4xx 응답) {@code INVALID_INPUT}, 그 밖의 연동 실패는
  * {@code EXTERNAL_SERVICE_ERROR}다. 카카오 응답 본문은 사용자에게 그대로 전달하지 않는다.
+ *
+ * <p>{@code app.kakao.stub=true}이면 꺼지고 {@link KakaoStubClient}가 대신한다.
  */
 @Component
+@ConditionalOnProperty(name = "app.kakao.stub", havingValue = "false", matchIfMissing = true)
 public class KakaoApiClient implements OAuthProviderClient {
 
 	private static final Logger log = LoggerFactory.getLogger(KakaoApiClient.class);
@@ -32,8 +38,16 @@ public class KakaoApiClient implements OAuthProviderClient {
 	private final RestClient restClient;
 	private final KakaoProperties properties;
 
+	/**
+	 * 제한 시간이 없으면 카카오 장애 시 요청 스레드가 무기한 묶인다(NFR-EXT-002). 연결·읽기 제한을 따로 건다.
+	 * 제한 시간 초과는 {@link RestClientException}으로 와서 {@code EXTERNAL_SERVICE_ERROR}가 된다.
+	 */
 	public KakaoApiClient(RestClient.Builder builder, KakaoProperties properties) {
-		this.restClient = builder.build();
+		HttpClientSettings settings = HttpClientSettings.defaults()
+				.withTimeouts(properties.connectTimeout(), properties.readTimeout());
+		this.restClient = builder
+				.requestFactory(ClientHttpRequestFactoryBuilder.detect().build(settings))
+				.build();
 		this.properties = properties;
 	}
 

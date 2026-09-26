@@ -6,8 +6,10 @@ import java.util.Locale;
 
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
+import com.reused.audit.api.AuditLogger;
 import com.reused.auth.client.OAuthProviderClient;
 import com.reused.auth.dto.request.OAuthLoginRequest;
 import com.reused.auth.dto.request.SignupRequest;
@@ -17,6 +19,7 @@ import com.reused.auth.token.JwtTokenProvider;
 import com.reused.auth.token.RefreshTokenStore;
 import com.reused.common.error.BusinessException;
 import com.reused.common.error.ErrorCode;
+import com.reused.common.tx.AfterCommit;
 import com.reused.user.entity.AuthProvider;
 import com.reused.user.entity.NotificationSettings;
 import com.reused.user.entity.User;
@@ -24,10 +27,15 @@ import com.reused.user.entity.UserIdentity;
 import com.reused.user.repository.NotificationSettingsRepository;
 import com.reused.user.repository.UserIdentityRepository;
 import com.reused.user.repository.UserRepository;
+import com.reused.user.service.NicknamePolicy;
 
 /**
  * 소셜 로그인·온보딩과 토큰 재발급·로그아웃.
  * 이메일 계정의 가입·로그인은 {@link EmailAuthService}가 담당한다.
+ *
+ * <p>감사 기록(recordSeparately)은 트랜잭션이 끝나 커넥션을 돌려준 뒤에 쓴다. 이유는 {@link EmailAuthService}와 같다
+ * (요청 하나가 커넥션 두 개를 잡으면 동시 요청에 풀이 멈춘다). 그래서 로그인·재발급에는 트랜잭션을 두지 않고,
+ * 가입은 {@link TransactionTemplate}으로 DB 작업만 감싼다. 로그인은 카카오 호출 동안에도 커넥션을 쥐지 않는다.
  */
 @Service
 public class AuthService {
@@ -38,17 +46,22 @@ public class AuthService {
 	private final NotificationSettingsRepository notificationSettingsRepository;
 	private final JwtTokenProvider tokenProvider;
 	private final RefreshTokenStore refreshTokenStore;
+	private final AuditLogger auditLogger;
+	private final TransactionTemplate transaction;
 
 	public AuthService(List<OAuthProviderClient> providerClients, UserRepository userRepository,
 			UserIdentityRepository identityRepository,
 			NotificationSettingsRepository notificationSettingsRepository,
-			JwtTokenProvider tokenProvider, RefreshTokenStore refreshTokenStore) {
+			JwtTokenProvider tokenProvider, RefreshTokenStore refreshTokenStore, AuditLogger auditLogger,
+			PlatformTransactionManager transactionManager) {
 		this.providerClients = providerClients;
 		this.userRepository = userRepository;
 		this.identityRepository = identityRepository;
 		this.notificationSettingsRepository = notificationSettingsRepository;
 		this.tokenProvider = tokenProvider;
 		this.refreshTokenStore = refreshTokenStore;
+		this.auditLogger = auditLogger;
+		this.transaction = new TransactionTemplate(transactionManager);
 	}
 
 	/**
@@ -59,13 +72,12 @@ public class AuthService {
 	 *
 	 * @param providerPath 경로 변수 그대로의 제공자 이름(소문자)
 	 */
-	@Transactional
 	public LoginResult login(String providerPath, OAuthLoginRequest request) {
 		AuthProvider provider = resolveProvider(providerPath);
 		String providerUserId = clientFor(provider).fetchProviderUserId(request.code(), request.redirectUri());
 
-		return identityRepository.findByProviderAndProviderUserId(provider, providerUserId)
-				.map(identity -> loginExisting(identity.getUser()))
+		return identityRepository.findWithUserByProviderAndProviderUserId(provider, providerUserId)
+				.map(identity -> loginExisting(identity.getUser(), provider))
 				.orElseGet(() -> new LoginResult(
 						OAuthLoginResponse.signupRequired(tokenProvider.issueSignupToken(provider, providerUserId)),
 						null));
@@ -95,36 +107,56 @@ public class AuthService {
 				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "지원하지 않는 로그인 제공자입니다."));
 	}
 
-	private LoginResult loginExisting(User user) {
+	/**
+	 * 성공·실패를 모두 감사 로그에 남긴다(FR-LOG-001). 실패 기록은 업무 롤백과 무관해야 하므로 별도 트랜잭션이다.
+	 */
+	private LoginResult loginExisting(User user, AuthProvider provider) {
 		// 인증 수단이 남아 있는 탈퇴 회원은 있을 수 없지만, 데이터 정합성이 깨진 경우의 방어다.
 		if (user.isWithdrawn()) {
+			auditLogger.recordSeparately(
+					AuthAuditEntries.loginFailed(user.getId(), provider, AuthAuditEntries.REASON_WITHDRAWN));
 			throw new BusinessException(ErrorCode.UNAUTHENTICATED);
 		}
 		// 소셜 로그인 명세의 오류 표를 따른다.
 		// 다만 business-rules는 이용정지 중에도 로그인을 허용한다고 적고 있어 두 문서가 어긋난다.
 		// 팀 합의 전까지 엔드포인트 명세(403)를 따르며, 뒤집을 때 고칠 곳은 이 한 줄이다.
-		if (user.isSuspended()) {
+		// 기간이 지난 정지는 자동 해제 작업이 상태를 되돌리기 전이어도 로그인을 허용한다.
+		if (user.isSuspendedAt(Instant.now())) {
+			auditLogger.recordSeparately(
+					AuthAuditEntries.loginFailed(user.getId(), provider, AuthAuditEntries.REASON_SUSPENDED));
 			throw new BusinessException(ErrorCode.USER_SUSPENDED);
 		}
 
 		String accessToken = tokenProvider.issueAccessToken(user.getId(), user.getRole());
 		String refreshToken = refreshTokenStore.issue(user.getId());
+		auditLogger.recordSeparately(AuthAuditEntries.loginSucceeded(user.getId(), provider));
 		return new LoginResult(OAuthLoginResponse.login(accessToken, user), refreshToken);
 	}
 
 	/**
 	 * 닉네임과 약관 동의를 받아 가입을 확정한다.
 	 * users 행, signupToken에 담긴 제공자의 인증 수단 행, 알림 설정 행을 한 트랜잭션에서 만든다.
+	 * 감사 기록은 그 트랜잭션이 커밋된 뒤에 한다({@link EmailAuthService#signup}과 같다).
 	 */
-	@Transactional
 	public SignupResult signup(SignupRequest request) {
+		NicknamePolicy.validate(request.nickname());
 		JwtTokenProvider.SignupTokenClaims signupClaims = tokenProvider.parseSignupToken(request.signupToken());
 
-		if (userRepository.existsByNickname(request.nickname())) {
+		SignupResult result = transaction.execute(status -> createAccount(request.nickname(), signupClaims));
+
+		// 새 users 행은 커밋 전이라 별도 트랜잭션에서 FK로 볼 수 없다. 커밋된 가입만 기록한다.
+		Long userId = result.response().user().userId();
+		AuthProvider provider = signupClaims.provider();
+		AfterCommit.run(() -> auditLogger.recordSeparately(AuthAuditEntries.signedUp(userId, provider)));
+		return result;
+	}
+
+	private SignupResult createAccount(String nickname, JwtTokenProvider.SignupTokenClaims signupClaims) {
+		if (userRepository.existsByNickname(nickname)) {
 			throw new BusinessException(ErrorCode.CONFLICT, "이미 사용 중인 닉네임입니다.");
 		}
 
-		User user = User.signUp(request.nickname(), Instant.now());
+		User user = User.signUp(nickname, Instant.now());
 		try {
 			user = userRepository.saveAndFlush(user);
 		}
@@ -142,6 +174,7 @@ public class AuthService {
 		}
 		notificationSettingsRepository.save(NotificationSettings.defaultsFor(user.getId()));
 
+		// 토큰 발급(Redis)이 실패하면 가입도 되돌린다.
 		String accessToken = tokenProvider.issueAccessToken(user.getId(), user.getRole());
 		String refreshToken = refreshTokenStore.issue(user.getId());
 		return new SignupResult(AuthTokenResponse.of(accessToken, user), refreshToken);
@@ -149,8 +182,10 @@ public class AuthService {
 
 	/**
 	 * Refresh Token 회전. 재사용이 감지되면 해당 사용자의 토큰이 전부 폐기된다.
+	 *
+	 * <p>트랜잭션을 두지 않는다. 재사용 탐지의 감사 기록이 커넥션을 쥔 채 커넥션을 하나 더 잡지 않게 한다.
+	 * 회원 조회는 리포지토리 호출 하나로 끝난다.
 	 */
-	@Transactional(readOnly = true)
 	public RefreshResult refresh(String refreshToken) {
 		RefreshTokenStore.Rotation rotation = refreshTokenStore.rotate(refreshToken);
 
@@ -165,10 +200,15 @@ public class AuthService {
 		return new RefreshResult(accessToken, rotation.refreshToken());
 	}
 
-	public void logout(String refreshToken) {
+	/**
+	 * @param userId 로그아웃은 USER 인증이 필요하다. 감사 로그의 행위자다
+	 * @param refreshToken 쿠키가 없으면 null. 폐기할 것이 없을 뿐 로그아웃은 성공한다
+	 */
+	public void logout(Long userId, String refreshToken) {
 		if (refreshToken != null) {
 			refreshTokenStore.revoke(refreshToken);
 		}
+		auditLogger.recordSeparately(AuthAuditEntries.loggedOut(userId));
 	}
 
 	public record LoginResult(OAuthLoginResponse response, String refreshToken) {

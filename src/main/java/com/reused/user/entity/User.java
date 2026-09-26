@@ -26,6 +26,12 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class User {
 
+	/**
+	 * 탈퇴 회원 닉네임 접두어. 탈퇴 시 {@code UserProfileLifecycleService}의 JDBC 탈퇴 처리가 붙이고,
+	 * 가입·닉네임 확인에서는 {@code NicknamePolicy}가 예약어로 막는다.
+	 */
+	public static final String WITHDRAWN_NICKNAME_PREFIX = "탈퇴회원#";
+
 	@Id
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	@Column(name = "user_id")
@@ -79,8 +85,40 @@ public class User {
 		return withdrawnAt != null || status == UserStatus.WITHDRAWN;
 	}
 
+	/**
+	 * DB 상태값이 SUSPENDED인지만 본다. 기간이 지난 정지도 true이므로 이용 차단 판정에는 쓰지 않는다.
+	 * 판정은 {@link #isSuspendedAt(Instant)}로 한다.
+	 */
 	public boolean isSuspended() {
 		return status == UserStatus.SUSPENDED;
+	}
+
+	/**
+	 * 지금 이용정지 중인가. suspended_until이 NULL이면 무기한이고(001_init.sql 주석), 지난 기간은 해제로 본다.
+	 * 자동 해제 작업이 상태값을 늦게 되돌려도 이 판정은 정확하다. {@link #isSuspended()}는 상태값만 보므로 작업이 돌 때까지 정지로 남는다.
+	 */
+	public boolean isSuspendedAt(Instant now) {
+		return status == UserStatus.SUSPENDED && (suspendedUntil == null || suspendedUntil.isAfter(now));
+	}
+
+	/**
+	 * @param until 정지 종료 시각. null이면 무기한
+	 */
+	public void suspend(Instant until, Instant now) {
+		this.status = UserStatus.SUSPENDED;
+		this.suspendedUntil = until;
+		this.updatedAt = now;
+	}
+
+	public void activate(Instant now) {
+		this.status = UserStatus.ACTIVE;
+		this.suspendedUntil = null;
+		this.updatedAt = now;
+	}
+
+	public void changeRole(UserRole role, Instant now) {
+		this.role = role;
+		this.updatedAt = now;
 	}
 
 }

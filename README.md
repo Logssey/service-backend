@@ -59,7 +59,9 @@ docker exec reused-postgres psql -U reused -d reused -f /tmp/003_profile_images.
 | 변수 | 필수 | 설명 |
 | --- | --- | --- |
 | `JWT_SECRET` | O | HS256 서명 키. 32바이트(256비트) 이상 |
-| `KAKAO_CLIENT_ID` | O | 카카오 REST API 키. 카카오 로그인을 쓰지 않을 때도 값은 있어야 한다 |
+| `SPRING_PROFILES_ACTIVE` | | 로컬 개발은 `local`. 카카오 대역이 켜진다(아래) |
+| `KAKAO_CLIENT_ID` | O | 카카오 REST API 키. `local` 프로파일의 대역 모드에서는 필요 없다 |
+| `KAKAO_STUB` | | `local` 프로파일에서 `false`로 두면 대역 대신 실제 카카오를 호출한다. 기본 `true` |
 | `KAKAO_CLIENT_SECRET` | | 카카오 Client Secret |
 | `SPRING_DATASOURCE_URL` / `_USERNAME` / `_PASSWORD` | O | 위 docker 명령 기준 `jdbc:postgresql://localhost:5432/reused`, `reused`, `reused` |
 | `SPRING_DATA_REDIS_HOST` | | 기본 `localhost` |
@@ -72,10 +74,13 @@ docker exec reused-postgres psql -U reused -d reused -f /tmp/003_profile_images.
 | `IMAGE_CLEANUP_INTERVAL` | | 고아 이미지 정리 주기. 기본 `1h` |
 | `IMAGE_UNATTACHED_LIMIT` | | 사용자별 미연결 이미지 상한. 기본 `20` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | 로컬 S3 사용 시 | AWS SDK 기본 자격증명 체인을 사용한다. 운영에서는 정적 키 대신 workload role을 사용한다 |
+| `ANTHROPIC_API_KEY` | | 챗봇 자유 입력 답변용 LLM 키. 비어 있으면 추천 질문만 동작하고 자유 입력은 503이다 |
+| `ANTHROPIC_BASE_URL` | | LLM API 주소. 게이트웨이를 거칠 때만 둔다. 기본은 SDK 기본 주소 |
+| `CHATBOT_ENABLED` | | `false`면 챗봇 두 엔드포인트가 모두 503이다(ADR-003 비활성화 스위치). 기본 `true` |
 
 ```bash
+export SPRING_PROFILES_ACTIVE="local"
 export JWT_SECRET="local-dev-secret-key-must-be-at-least-32-bytes-long"
-export KAKAO_CLIENT_ID="not-used-yet"
 export SPRING_DATASOURCE_URL="jdbc:postgresql://localhost:5432/reused"
 export SPRING_DATASOURCE_USERNAME="reused"
 export SPRING_DATASOURCE_PASSWORD="reused"
@@ -84,6 +89,8 @@ export APP_AUTH_COOKIE_SECURE="false"
 ```
 
 서버는 `http://localhost:8080`에서 뜬다. 프론트엔드 개발 서버(`service-frontend`, 5173)가 `/api` 요청을 이 주소로 프록시한다.
+
+**카카오 대역.** `local` 프로파일에서는 `KakaoStubClient`가 카카오를 호출하지 않고 인가 코드를 그대로 회원번호로 쓴다. 프론트 `.env`에 `VITE_KAKAO_STUB=true`를 두면 브라우저마다 고정된 코드를 보내므로 같은 계정으로 계속 로그인된다. 대역은 `local` 프로파일과 `app.kakao.stub=true`가 모두 있어야 뜨고, 이때 실제 클라이언트는 꺼진다. 프로파일 없이 stub만 켜면 카카오 로그인은 404로 막힌다.
 
 ### 이미지 저장소 운영 조건
 
@@ -138,16 +145,26 @@ PR에는 `Marketplace tests` 워크플로가 동일한 회귀 검증을 수행�
 com.reused
 ├── common/        모든 도메인이 공유하는 것
 │   ├── error/     ErrorCode, BusinessException, 전역 예외 → api-spec 0.5 오류 응답
-│   └── security/  JWT 필터, AuthPrincipal, @AuthUser, SecurityConfig
+│   ├── pagination/ CursorPageRequest, CursorPageResponse, CursorCodec → api-spec 0.4 커서 페이지
+│   ├── paging/    IdPage(업스트림 커서 헬퍼)
+│   ├── security/  JWT 필터, AuthPrincipal, @AuthUser, SecurityConfig, 관리자 DB 재확인
+│   └── tx/        AfterCommit(커밋 후 실행)
+├── audit/         감사 로그. B 코드는 `audit.api.AuditLogger`, A 관리자 게시글 조치는 `audit.service.AuditService`로 기록한다(같은 audit_logs, 행 형식 호환)
 ├── auth/          인증 행위: 로그인·가입·토큰·인증 코드·메일
-├── user/          회원과 인증 수단 엔티티, 프로필
+├── user/          회원과 인증 수단 엔티티, 프로필, 이용정지·해제(UserModerationService, 만료 해제 작업)
+│   └── api/       ActiveUserGuard(정지·탈퇴 DB 확인), UserQueryService(회원 요약)
+├── block/         차단(BlockService). 다른 도메인은 BlockService.eitherDirection으로 차단 관계를 확인한다
+├── report/        신고. api/에 신고 대상·콘텐츠 조치 포트와 ReportStatsQuery(신고 집계)
+├── notification/  인앱 알림. 거래·채팅·후기·탈퇴 알림은 service/NotificationService.createFor(업무 트랜잭션 안), 신고 처리·공지 알림은 api/NotificationEventPublisher(커밋 뒤 별도 트랜잭션)
+├── chatbot/       추천 질문·자유 입력 안내. LLM은 llm/LlmClient(공급자 중립) 뒤에 있고 전용 스레드 풀에서 호출한다
 ├── category/
 └── <domain>/      controller · service · repository · entity · dto/{request,response}
 ```
 
 - 최상위는 **도메인별 패키지**, 그 안은 **역할별 패키지**다(api-spec 0.1).
-- 다른 도메인이 인증 정보를 쓸 때는 `common.security`의 `@AuthUser AuthPrincipal` 또는 `CurrentUserProvider`만 사용한다. `auth` 패키지 내부에 의존하지 않는다.
-- 외부 시스템 호출은 인터페이스 뒤에 둔다(`auth.client`, `auth.mail`). 테스트에서 `@MockitoBean`으로 바꾸기 위함이다.
+- 다른 도메인이 인증 정보를 쓸 때는 `common.security`의 `@AuthUser AuthPrincipal` 또는 `CurrentUserProvider`만 사용한다. `auth` 패키지 내부에 의존하지 않는다. 로그인이 선택인 공개 엔드포인트는 `@AuthUser @Nullable AuthPrincipal`(JSpecify)로 받는다.
+- 다른 개발자가 쓰는 계약 인터페이스는 제공 도메인의 `api` 하위 패키지에 두고, 쓰는 쪽은 `*.api`만 import한다.
+- 외부 시스템 호출은 인터페이스 뒤에 둔다(`auth.client`, `auth.mail`, `chatbot.llm`). 테스트에서 `@MockitoBean`으로 바꾸기 위함이다.
 
 ## 규칙
 
