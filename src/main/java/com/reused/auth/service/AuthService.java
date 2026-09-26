@@ -4,6 +4,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -40,6 +42,14 @@ import com.reused.user.service.NicknamePolicy;
 @Service
 public class AuthService {
 
+	private static final Logger log = LoggerFactory.getLogger(AuthService.class);
+
+	static final String EMAIL_CONSENT_REQUIRED_MESSAGE = "이메일을 등록하려면 이메일 수집·이용에 동의해야 합니다.";
+
+	/** 같은 소셜 계정의 중복 가입. 이 두 제약 위반만 409다. */
+	private static final List<String> DUPLICATE_SOCIAL_ACCOUNT_CONSTRAINTS = List.of(
+			"uq_user_identities_provider_identity", "uq_user_identities_user_provider");
+
 	private final List<OAuthProviderClient> providerClients;
 	private final UserRepository userRepository;
 	private final UserIdentityRepository identityRepository;
@@ -47,13 +57,14 @@ public class AuthService {
 	private final JwtTokenProvider tokenProvider;
 	private final RefreshTokenStore refreshTokenStore;
 	private final AuditLogger auditLogger;
+	private final EmailVerificationMailer verificationMailer;
 	private final TransactionTemplate transaction;
 
 	public AuthService(List<OAuthProviderClient> providerClients, UserRepository userRepository,
 			UserIdentityRepository identityRepository,
 			NotificationSettingsRepository notificationSettingsRepository,
 			JwtTokenProvider tokenProvider, RefreshTokenStore refreshTokenStore, AuditLogger auditLogger,
-			PlatformTransactionManager transactionManager) {
+			EmailVerificationMailer verificationMailer, PlatformTransactionManager transactionManager) {
 		this.providerClients = providerClients;
 		this.userRepository = userRepository;
 		this.identityRepository = identityRepository;
@@ -61,6 +72,7 @@ public class AuthService {
 		this.tokenProvider = tokenProvider;
 		this.refreshTokenStore = refreshTokenStore;
 		this.auditLogger = auditLogger;
+		this.verificationMailer = verificationMailer;
 		this.transaction = new TransactionTemplate(transactionManager);
 	}
 
@@ -137,26 +149,44 @@ public class AuthService {
 	 * 닉네임과 약관 동의를 받아 가입을 확정한다.
 	 * users 행, signupToken에 담긴 제공자의 인증 수단 행, 알림 설정 행을 한 트랜잭션에서 만든다.
 	 * 감사 기록은 그 트랜잭션이 커밋된 뒤에 한다({@link EmailAuthService#signup}과 같다).
+	 *
+	 * <p>이메일은 선택이다(ADR-019). 입력하면 별도 선택 동의가 필요하고(없으면 400), 동의 시각을 함께 저장한다.
+	 * 커밋 뒤 소유 확인 메일을 1회 보내며, 발송 실패는 가입을 되돌리지 않는다. 입력하지 않으면 동의 값은 무시한다.
+	 * 이 단계에서는 이메일 중복을 검사하지 않는다. 확인 전 주소는 선점할 수 없고, 가입 여부도 드러내지 않는다.
+	 * 감사 기록에는 이메일도, 입력 여부도 남기지 않는다(NFR-LOG-003).
 	 */
 	public SignupResult signup(SignupRequest request) {
 		NicknamePolicy.validate(request.nickname());
+		String email = EmailAuthService.normalizeOptionalEmail(request.email());
+		if (email != null && !Boolean.TRUE.equals(request.emailCollectionAgreed())) {
+			throw new BusinessException(ErrorCode.INVALID_INPUT, EMAIL_CONSENT_REQUIRED_MESSAGE);
+		}
 		JwtTokenProvider.SignupTokenClaims signupClaims = tokenProvider.parseSignupToken(request.signupToken());
 
-		SignupResult result = transaction.execute(status -> createAccount(request.nickname(), signupClaims));
+		CreatedSocialAccount account = transaction.execute(
+				status -> createAccount(request.nickname(), email, signupClaims));
 
 		// 새 users 행은 커밋 전이라 별도 트랜잭션에서 FK로 볼 수 없다. 커밋된 가입만 기록한다.
-		Long userId = result.response().user().userId();
 		AuthProvider provider = signupClaims.provider();
-		AfterCommit.run(() -> auditLogger.recordSeparately(AuthAuditEntries.signedUp(userId, provider)));
-		return result;
+		AfterCommit.run(() -> auditLogger.recordSeparately(AuthAuditEntries.signedUp(account.userId(), provider)));
+		if (email != null) {
+			AfterCommit.run(() -> verificationMailer.sendQuietly(account.identityId(), email));
+		}
+		return account.result();
 	}
 
-	private SignupResult createAccount(String nickname, JwtTokenProvider.SignupTokenClaims signupClaims) {
+	/**
+	 * @param email 정규화된 선택 이메일. 입력하지 않았으면 null
+	 */
+	private CreatedSocialAccount createAccount(String nickname, String email,
+			JwtTokenProvider.SignupTokenClaims signupClaims) {
 		if (userRepository.existsByNickname(nickname)) {
 			throw new BusinessException(ErrorCode.CONFLICT, "이미 사용 중인 닉네임입니다.");
 		}
 
-		User user = User.signUp(nickname, Instant.now());
+		// 필수 약관과 이메일 선택 동의는 같은 요청에서 받으므로 같은 시각으로 남긴다.
+		Instant agreedAt = Instant.now();
+		User user = User.signUp(nickname, agreedAt);
 		try {
 			user = userRepository.saveAndFlush(user);
 		}
@@ -164,20 +194,29 @@ public class AuthService {
 			// 중복 검사와 INSERT 사이의 경쟁 조건. 최종 판정은 DB의 UNIQUE 제약이다.
 			throw new BusinessException(ErrorCode.CONFLICT, "이미 사용 중인 닉네임입니다.", e);
 		}
+		UserIdentity identity;
 		try {
-			identityRepository.saveAndFlush(
-					UserIdentity.social(user, signupClaims.provider(), signupClaims.providerUserId()));
+			identity = identityRepository.saveAndFlush(UserIdentity.social(
+					user, signupClaims.provider(), signupClaims.providerUserId(), email, agreedAt));
 		}
 		catch (DataIntegrityViolationException e) {
-			// 같은 signupToken으로 온보딩을 두 번 완료하려는 경우
-			throw new BusinessException(ErrorCode.CONFLICT, "이미 가입된 소셜 계정입니다.", e);
+			if (DUPLICATE_SOCIAL_ACCOUNT_CONSTRAINTS.stream().anyMatch(name -> ConstraintNames.matches(e, name))) {
+				// 같은 signupToken으로 온보딩을 두 번 완료하려는 경우
+				throw new BusinessException(ErrorCode.CONFLICT, "이미 가입된 소셜 계정입니다.", e);
+			}
+			// 그 밖의 위반(예: 예상하지 못한 CHECK 위반)은 입력을 고쳐도 성공하지 않으므로 409로 보이면 안 된다.
+			// 서버 DETAIL에는 행 값(이메일)이 담긴다. 드라이버 설정(logServerErrorDetail=false)이 예외 메시지에서 빼지만,
+			// 설정에만 기대지 않고 제약 이름만 남기며 원 예외를 싣지 않는다(NFR-LOG-003).
+			log.error("소셜 인증 수단 저장 실패. constraint={}", ConstraintNames.of(e));
+			throw new BusinessException(ErrorCode.INTERNAL_ERROR);
 		}
 		notificationSettingsRepository.save(NotificationSettings.defaultsFor(user.getId()));
 
 		// 토큰 발급(Redis)이 실패하면 가입도 되돌린다.
 		String accessToken = tokenProvider.issueAccessToken(user.getId(), user.getRole());
 		String refreshToken = refreshTokenStore.issue(user.getId());
-		return new SignupResult(AuthTokenResponse.of(accessToken, user), refreshToken);
+		return new CreatedSocialAccount(user.getId(), identity.getId(),
+				new SignupResult(AuthTokenResponse.of(accessToken, user), refreshToken));
 	}
 
 	/**
@@ -215,6 +254,10 @@ public class AuthService {
 	}
 
 	public record SignupResult(AuthTokenResponse response, String refreshToken) {
+	}
+
+	/** 온보딩 트랜잭션의 결과. 커밋 뒤 작업(감사·소유 확인 메일)이 식별자를 쓴다. */
+	private record CreatedSocialAccount(Long userId, Long identityId, SignupResult result) {
 	}
 
 	public record RefreshResult(String accessToken, String refreshToken) {

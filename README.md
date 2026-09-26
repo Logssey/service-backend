@@ -43,14 +43,18 @@ Hibernate가 테이블을 만들지 않는다(`ddl-auto=none`). `schema/` 아래
 docker cp schema/001_init.sql reused-postgres:/tmp/001_init.sql
 docker cp schema/002_seed_categories.sql reused-postgres:/tmp/002_seed_categories.sql
 docker cp schema/003_profile_images.sql reused-postgres:/tmp/003_profile_images.sql
+docker cp schema/004_social_identity_email.sql reused-postgres:/tmp/004_social_identity_email.sql
 docker exec reused-postgres psql -U reused -d reused -f /tmp/001_init.sql
 docker exec reused-postgres psql -U reused -d reused -f /tmp/002_seed_categories.sql
 docker exec reused-postgres psql -U reused -d reused -f /tmp/003_profile_images.sql
+docker exec reused-postgres psql -U reused -d reused -f /tmp/004_social_identity_email.sql
 ```
 
-기존 DB에는 이미 실행한 001·002를 재실행하지 않고 새 003만 한 번 적용한다. 데이터 초기화가 필요한 개발용 DB만 별도로 재생성한다. 운영 DB는 임의로 초기화하지 않는다.
+기존 DB에는 이미 실행한 번호를 재실행하지 않고, 아직 적용하지 않은 번호만 순서대로 한 번 적용한다. 데이터 초기화가 필요한 개발용 DB만 별도로 재생성한다. 운영 DB는 임의로 초기화하지 않는다.
 
 003을 아직 적용하지 않은 환경에서도 기존 LISTING 이미지 API는 동작한다. PROFILE 업로드·연결 변경은 마이그레이션이 적용될 때까지 503으로 거부한다. 애플리케이션이 운영 DDL을 자동 변경하지 않는다.
+
+004(소셜 계정 선택 이메일, ADR-019)는 반드시 애플리케이션 배포 전에 적용한다. 제약 완화와 NULL 허용 컬럼·CHECK·부분 UNIQUE 인덱스 추가뿐이라 기존 버전과 호환된다. 새 애플리케이션은 `user_identities.email_consent_at` 컬럼을 매핑하므로, 004를 적용하지 않은 DB에서는 인증 수단을 조회·저장하는 모든 요청(소셜·이메일 로그인, 이메일 가입, 소셜 온보딩, 소유 확인 코드 발송·확인, 비밀번호 재설정·변경)이 이메일 입력 여부와 무관하게 500으로 실패한다. 적용 전에 `SELECT count(*) FROM user_identities WHERE email IS NULL AND email_verified_at IS NOT NULL`이 0인지 확인한다.
 
 ### 3. 환경변수와 기동
 
@@ -136,7 +140,7 @@ PR에는 `Marketplace tests` 워크플로가 동일한 회귀 검증을 수행�
 - Spring API는 `/api`, 별도 채팅 런타임은 `/socket.io`로 라우팅한다. WebSocket 업그레이드와 채팅 Origin 허용 목록을 설정한다.
 - 채팅의 `CHAT_API_BASE_URL`은 Spring 주소, `CHAT_REDIS_URL`은 API와 같은 Redis, `CHAT_ALLOWED_ORIGINS`는 실제 프론트 Origin이다. JWT 비밀키를 채팅 서버에 복제하지 않는다.
 - Spring의 `/actuator/health/liveness`, `/actuator/health/readiness`는 인증 없는 컨테이너 프로브용이다. 다른 관리 엔드포인트를 공개하지 않는다.
-- 기능 구현·로컬/CI 검증과 운영 배포는 구분한다. 실제 S3·SMTP·카카오 자격증명, 003 DB 적용, Socket.IO 라우팅은 운영 담당자가 해당 환경에 반영해야 한다.
+- 기능 구현·로컬/CI 검증과 운영 배포는 구분한다. 실제 S3·SMTP·카카오 자격증명, 003·004 DB 적용, Socket.IO 라우팅은 운영 담당자가 해당 환경에 반영해야 한다.
 - 구현 상태의 원본은 [설계 저장소 현황](https://github.com/Logssey/service-design-docs/blob/main/05-api/backend-implementation-status.md)이다.
 
 ## 프로젝트 구조

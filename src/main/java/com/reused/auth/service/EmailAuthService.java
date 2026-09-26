@@ -47,6 +47,9 @@ import com.reused.user.service.NicknamePolicy;
  * 쓰면 요청 하나가 커넥션을 두 개 잡는다. 공개 엔드포인트라 동시 요청이 풀 크기만큼 몰리면 모두 두 번째 커넥션을
  * 기다리며 풀이 멈추고, 대기 시간이 지나면 실패 기록이 사라진다. 그래서 로그인에는 트랜잭션을 두지 않고,
  * 가입·재설정은 {@link TransactionTemplate}으로 DB 작업만 감싼다.
+ *
+ * <p>소유 확인(재발송·확인)은 이메일이 등록된 모든 인증 수단에 적용한다. LOCAL은 항상, 소셜은 온보딩에서 이메일을
+ * 입력했을 때다(ADR-019). 이메일 로그인·가입 중복 검사·비밀번호 재설정·비밀번호 변경은 계속 LOCAL 전용이다.
  */
 @Service
 public class EmailAuthService {
@@ -57,6 +60,10 @@ public class EmailAuthService {
 	static final String INVALID_CODE_MESSAGE = "인증 코드가 올바르지 않거나 만료되었습니다.";
 	static final String CURRENT_PASSWORD_MISMATCH_MESSAGE = "현재 비밀번호가 올바르지 않습니다.";
 	static final String PASSWORD_CHANGE_RATE_LIMITED_MESSAGE = "비밀번호 확인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.";
+	static final String EMAIL_VERIFIED_ELSEWHERE_MESSAGE = "이미 다른 계정에서 인증된 이메일입니다.";
+
+	/** 소유 확인을 마친 소셜 이메일의 유일성(004). 확인 판정의 경합을 최종 판정한다. */
+	private static final String SOCIAL_VERIFIED_EMAIL_INDEX = "uq_user_identities_email_social_verified";
 
 	private final UserRepository userRepository;
 	private final UserIdentityRepository identityRepository;
@@ -67,6 +74,7 @@ public class EmailAuthService {
 	private final AuthCodeStore codeStore;
 	private final LoginAttemptLimiter loginAttemptLimiter;
 	private final AuthMailSender mailSender;
+	private final EmailVerificationMailer verificationMailer;
 	private final AuditLogger auditLogger;
 	private final TransactionTemplate transaction;
 
@@ -76,7 +84,8 @@ public class EmailAuthService {
 	public EmailAuthService(UserRepository userRepository, UserIdentityRepository identityRepository,
 			NotificationSettingsRepository notificationSettingsRepository, PasswordEncoder passwordEncoder,
 			JwtTokenProvider tokenProvider, RefreshTokenStore refreshTokenStore, AuthCodeStore codeStore,
-			LoginAttemptLimiter loginAttemptLimiter, AuthMailSender mailSender, AuditLogger auditLogger,
+			LoginAttemptLimiter loginAttemptLimiter, AuthMailSender mailSender,
+			EmailVerificationMailer verificationMailer, AuditLogger auditLogger,
 			PlatformTransactionManager transactionManager) {
 		this.userRepository = userRepository;
 		this.identityRepository = identityRepository;
@@ -87,6 +96,7 @@ public class EmailAuthService {
 		this.codeStore = codeStore;
 		this.loginAttemptLimiter = loginAttemptLimiter;
 		this.mailSender = mailSender;
+		this.verificationMailer = verificationMailer;
 		this.auditLogger = auditLogger;
 		this.transaction = new TransactionTemplate(transactionManager);
 		this.dummyPasswordHash = passwordEncoder.encode(UUID.randomUUID().toString());
@@ -109,7 +119,7 @@ public class EmailAuthService {
 		// 새 users 행은 커밋 전이라 별도 트랜잭션에서 FK로 볼 수 없다. 커밋된 가입만 기록한다.
 		AfterCommit.run(() -> auditLogger.recordSeparately(
 				AuthAuditEntries.signedUp(account.userId(), AuthProvider.LOCAL)));
-		AfterCommit.run(() -> sendVerificationQuietly(account.identityId(), email));
+		AfterCommit.run(() -> verificationMailer.sendQuietly(account.identityId(), email));
 		return account.result();
 	}
 
@@ -192,7 +202,9 @@ public class EmailAuthService {
 	}
 
 	/**
-	 * 소유 확인 코드 재발송. 대상 주소는 토큰 사용자의 LOCAL 인증 수단이며 바디로 주소를 받지 않는다.
+	 * 소유 확인 코드 재발송. 대상 주소는 토큰 사용자의 인증 수단에 등록된 이메일이며 바디로 주소를 받지 않는다.
+	 * 이메일을 입력하지 않은 소셜 계정은 대상이 없어 409다. 같은 주소를 다른 소셜 계정이 이미 확인했어도 재발송은
+	 * 막지 않는다. 그 판정은 코드로 소유가 증명된 뒤 {@link #confirmVerification}에서 한다(ADR-019).
 	 *
 	 * <p>트랜잭션을 두지 않는다({@link #requestPasswordReset}과 같다). 인증 수단은 기본 컬럼만 쓰므로 조회 한 번으로 끝나고,
 	 * Redis 기록과 동기 SMTP 발송(단계마다 최대 5초)은 커넥션을 쥐지 않은 채 한다.
@@ -200,26 +212,53 @@ public class EmailAuthService {
 	public void resendVerification(Long userId) {
 		UserIdentity identity = identityRepository.findByUserId(userId)
 				.orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHENTICATED));
-		if (!identity.isLocal()) {
-			throw new BusinessException(ErrorCode.CONFLICT, "소셜 계정은 이메일 소유 확인 대상이 아닙니다.");
+		if (!identity.hasEmail()) {
+			throw new BusinessException(ErrorCode.CONFLICT, "등록된 이메일이 없습니다.");
 		}
 		if (identity.isEmailVerified()) {
 			throw new BusinessException(ErrorCode.CONFLICT, "이미 소유 확인이 완료된 이메일입니다.");
 		}
 
-		codeStore.recordSend(identity.getId());
-		String code = codeStore.issue(CodePurpose.VERIFY, identity.getId());
-		mailSender.sendVerificationCode(identity.getEmail(), code);
+		verificationMailer.send(identity.getId(), identity.getEmail());
 	}
 
+	/**
+	 * 발송된 코드로 인증 수단에 등록된 이메일의 소유를 확인한다.
+	 *
+	 * <p>소유 확인을 마친 소셜 이메일은 소셜 인증 수단 사이에서 하나뿐이다(ADR-019). 다른 소셜 계정이 먼저 확인을 마친
+	 * 주소면 409다. 코드가 맞아 소유가 증명된 뒤에만 알리므로 주소 주인이 아닌 사람에게 가입 여부를 드러내지 않고
+	 * (NFR-AUTH-018), 이때 코드는 소비하지 않는다. 검사와 저장 사이의 경합은 부분 UNIQUE 인덱스가 최종 판정하며
+	 * 같은 409로 바꾼다. LOCAL 이메일은 이 판정 대상이 아니다(제공자가 다르면 별개 계정, ADR-016).
+	 *
+	 * @throws BusinessException INVALID_INPUT 코드 불일치·만료(이메일이 없거나 이미 확인된 계정 포함),
+	 *         RATE_LIMITED 코드당 시도 초과, CONFLICT 다른 소셜 계정에서 이미 확인된 이메일
+	 */
 	@Transactional
 	public void confirmVerification(Long userId, String code) {
 		UserIdentity identity = identityRepository.findByUserId(userId)
 				.orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHENTICATED));
 
-		// 소셜 계정이나 이미 확인된 계정은 유효한 코드가 없으므로 같은 400으로 끝난다.
-		codeStore.consume(CodePurpose.VERIFY, identity.getId(), code);
+		// 이메일이 없는 계정이나 이미 확인된 계정은 유효한 코드가 없으므로 같은 400으로 끝난다.
+		codeStore.check(CodePurpose.VERIFY, identity.getId(), code);
+		if (!identity.isLocal()
+				&& identityRepository.existsVerifiedSocialEmailElsewhere(identity.getEmail(), identity.getId())) {
+			throw new BusinessException(ErrorCode.CONFLICT, EMAIL_VERIFIED_ELSEWHERE_MESSAGE);
+		}
+
 		identity.markEmailVerified(Instant.now());
+		try {
+			identityRepository.flush();
+		}
+		catch (DataIntegrityViolationException e) {
+			if (ConstraintNames.matches(e, SOCIAL_VERIFIED_EMAIL_INDEX)) {
+				throw new BusinessException(ErrorCode.CONFLICT, EMAIL_VERIFIED_ELSEWHERE_MESSAGE);
+			}
+			// 서버 DETAIL에는 행 값(이메일)이 담긴다. 드라이버 설정(logServerErrorDetail=false)이 예외 메시지에서 빼지만,
+			// 설정에만 기대지 않고 제약 이름만 남기며 원 예외를 싣지 않는다(NFR-LOG-003).
+			log.error("이메일 소유 확인 저장 실패. constraint={}", ConstraintNames.of(e));
+			throw new BusinessException(ErrorCode.INTERNAL_ERROR);
+		}
+		codeStore.discard(CodePurpose.VERIFY, identity.getId());
 	}
 
 	/**
@@ -329,17 +368,6 @@ public class EmailAuthService {
 		return new AuthResult(AuthTokenResponse.of(accessToken, user), refreshToken);
 	}
 
-	private void sendVerificationQuietly(Long identityId, String email) {
-		try {
-			codeStore.recordSend(identityId);
-			String code = codeStore.issue(CodePurpose.VERIFY, identityId);
-			mailSender.sendVerificationCode(email, code);
-		}
-		catch (RuntimeException e) {
-			log.warn("가입 직후 소유 확인 메일 발송 실패. 재발송으로 복구 가능. identityId={}", identityId, e);
-		}
-	}
-
 	private void recordLoginFailure(Long userId, String reason) {
 		auditLogger.recordSeparately(AuthAuditEntries.loginFailed(userId, AuthProvider.LOCAL, reason));
 	}
@@ -353,6 +381,14 @@ public class EmailAuthService {
 	 */
 	static String normalizeEmail(String email) {
 		return email.trim().toLowerCase(Locale.ROOT);
+	}
+
+	/**
+	 * 선택 입력 이메일(소셜 온보딩, ADR-019). null·빈 문자열은 입력하지 않은 것으로 보고 null을 돌려준다.
+	 * 공백만 있는 값은 요청 검증({@code @Email})에서 이미 400이다.
+	 */
+	static String normalizeOptionalEmail(String email) {
+		return email == null || email.isBlank() ? null : normalizeEmail(email);
 	}
 
 	public record AuthResult(AuthTokenResponse response, String refreshToken) {
