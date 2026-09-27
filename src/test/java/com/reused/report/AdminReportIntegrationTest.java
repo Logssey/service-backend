@@ -542,17 +542,17 @@ class AdminReportIntegrationTest {
 		assertThat(refreshKeys(target.userId())).hasSize(1);
 	}
 
-	// --- PATCH: 대상 도메인 구현이 없을 때 ---
+	// --- PATCH: 대상이 존재하지 않을 때 ---
 
 	@ParameterizedTest(name = "{0}")
 	@ValueSource(strings = { "HIDE_LISTING", "DELETE_LISTING" })
-	@DisplayName("콘텐츠 조치 구현(ContentModerationPort)이 없으면 503이고 신고는 그대로다")
-	void contentActionWithoutPortIsUnavailable(String action) throws Exception {
+	@DisplayName("신고 대상 상품이 없으면 404이고 신고는 그대로다")
+	void contentActionWithMissingListingIsNotFound(String action) throws Exception {
 		long reportId = insertReport(reporter.userId(), "LISTING", 101, "SPAM", "RECEIVED");
 
 		mockMvc.perform(handle(admin, reportId, handleBody("RESOLVED", "허위 매물", action)))
-				.andExpect(status().isServiceUnavailable())
-				.andExpect(jsonPath("$.code").value("SERVICE_UNAVAILABLE"));
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.code").value("NOT_FOUND"));
 
 		assertReportUnchanged(reportId);
 	}

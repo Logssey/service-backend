@@ -23,8 +23,9 @@ public class RecordingContentModerationPort implements ContentModerationPort {
 	private volatile RuntimeException failure;
 
 	@Override
-	public boolean hideListing(long listingId, long adminId, String reason) {
-		return apply("hideListing", listingId, adminId, reason);
+	public ListingHideResult hideListing(long listingId, long adminId, String reason) {
+		boolean changed = apply("hideListing", listingId, adminId, reason);
+		return new ListingHideResult(changed, changed ? "ON_SALE" : null);
 	}
 
 	@Override

@@ -169,7 +169,8 @@ public class AdminRepository {
 				SELECT detail ->> 'beforeStatus' AS before_status
 				FROM audit_logs
 				WHERE target_type = 'LISTING' AND target_id = :listingId
-				  AND action = 'LISTING_HIDE' AND result = 'SUCCESS'
+				  AND action IN ('LISTING_HIDE', 'ADMIN_LISTING_HIDE') AND result = 'SUCCESS'
+				  AND detail ->> 'beforeStatus' IN ('ON_SALE', 'RESERVED', 'COMPLETED')
 				ORDER BY audit_log_id DESC
 				LIMIT 1
 				""", new MapSqlParameterSource("listingId", listingId),
