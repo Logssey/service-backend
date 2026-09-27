@@ -7,6 +7,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /**
  * 이메일 계정 정책 값. 기본값은 business-rules.md 4장 정책 표와 같다.
+ * 인증 코드와 재발송 제한은 이메일을 등록한 소셜 계정의 소유 확인에도 같은 값을 쓴다(ADR-016).
  *
  * <ul>
  *   <li>인증·재설정 코드: 10분, 코드당 검증 5회

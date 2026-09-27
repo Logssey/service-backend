@@ -116,6 +116,10 @@ public class ChatbotService {
 			throw new BusinessException(ErrorCode.INVALID_INPUT, "질문을 입력해 주세요.");
 		}
 		requireEnabled();
+		if (!properties.freeInputEnabled()) {
+			throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE,
+					"현재 직접 입력한 질문에는 답할 수 없습니다. 추천 질문을 이용해 주세요.");
+		}
 		if (!llmClient.isConfigured()) {
 			throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "현재 직접 입력한 질문에는 답변할 수 없습니다. 추천 질문을 이용해 주세요.");
 		}

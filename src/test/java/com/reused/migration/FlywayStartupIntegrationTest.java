@@ -27,7 +27,7 @@ class FlywayStartupIntegrationTest {
 	void bootMigratesFreshTestcontainersDatabaseUsingPackagedSql() {
 		assertThat(Arrays.stream(flyway.info().applied())
 				.map(info -> info.getVersion().toString())
-				.toList()).containsExactly("1", "2", "3");
+				.toList()).containsExactly("1", "2", "3", "4");
 		assertThat(jdbc.queryForObject("SELECT to_regclass('public.users') IS NOT NULL", Boolean.class)).isTrue();
 		assertThat(jdbc.queryForObject("SELECT to_regclass('public.flyway_schema_history') IS NOT NULL", Boolean.class))
 				.isTrue();
@@ -36,6 +36,11 @@ class FlywayStartupIntegrationTest {
 				WHERE table_schema = 'public' AND table_name = 'listing_images'
 				  AND column_name IN ('purpose', 'profile_user_id')
 				""", Integer.class)).isEqualTo(2);
+		assertThat(jdbc.queryForObject("""
+				SELECT count(*) FROM information_schema.columns
+				WHERE table_schema = 'public' AND table_name = 'user_identities'
+				  AND column_name = 'email_consent_at'
+				""", Integer.class)).isOne();
 		assertThat(flyway.migrate().migrationsExecuted).isZero();
 	}
 

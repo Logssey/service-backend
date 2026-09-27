@@ -767,7 +767,8 @@ class AdminNoticeIntegrationTest {
 	}
 
 	private long userIdOf(String email) {
-		return jdbcTemplate.queryForObject("SELECT user_id FROM user_identities WHERE email = ?", Long.class, email);
+		return jdbcTemplate.queryForObject("SELECT user_id FROM user_identities WHERE provider = 'LOCAL' AND email = ?",
+				Long.class, email);
 	}
 
 	private static Map<String, Object> createBody(String title, String content, boolean pinned) {
@@ -804,7 +805,7 @@ class AdminNoticeIntegrationTest {
 	private String adminToken(String email, String nickname) throws Exception {
 		Tokens tokens = signup(email, nickname);
 		jdbcTemplate.update("UPDATE users SET role = 'ADMIN' WHERE user_id = "
-				+ "(SELECT user_id FROM user_identities WHERE email = ?)", email);
+				+ "(SELECT user_id FROM user_identities WHERE provider = 'LOCAL' AND email = ?)", email);
 		MvcResult refreshed = mockMvc.perform(post("/api/v1/auth/refresh")
 						.cookie(new Cookie(REFRESH_COOKIE, tokens.refreshToken())))
 				.andExpect(status().isOk())

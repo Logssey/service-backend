@@ -57,7 +57,8 @@ dependencies {
 def migrationNames = [
 	'001_init.sql': 'V1__init.sql',
 	'002_seed_categories.sql': 'V2__seed_categories.sql',
-	'003_profile_images.sql': 'V3__profile_images.sql'
+	'003_profile_images.sql': 'V3__profile_images.sql',
+	'004_social_identity_email.sql': 'V4__social_identity_email.sql'
 ]
 tasks.named('processResources') {
 	from("$projectDir/schema") {

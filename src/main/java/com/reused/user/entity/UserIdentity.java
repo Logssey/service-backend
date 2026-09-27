@@ -26,9 +26,13 @@ import lombok.NoArgsConstructor;
  *
  * <p>제공자별 컬럼 사용 규칙은 DB CHECK 제약과 같다.
  * <ul>
- *   <li>{@code KAKAO} — providerUserId=카카오 회원번호. email·passwordHash는 NULL
- *   <li>{@code LOCAL} — providerUserId=서버 발급 UUID. email·passwordHash 필수
+ *   <li>{@code KAKAO} — providerUserId=카카오 회원번호. email은 온보딩 선택 입력(식별자 아님, NULL 가능)이며
+ *       있으면 emailConsentAt(수집·이용 선택 동의 시각)도 있다. passwordHash는 항상 NULL
+ *   <li>{@code LOCAL} — providerUserId=서버 발급 UUID. email·passwordHash 필수. emailConsentAt은 쓰지 않는다
  * </ul>
+ *
+ * <p>emailVerifiedAt이 있으면 email도 있다. 소유 확인을 마친 소셜 이메일은 소셜 인증 수단 사이에서 하나뿐이다
+ * (부분 UNIQUE 인덱스, ADR-016).
  */
 @Entity
 @Table(name = "user_identities")
@@ -61,6 +65,9 @@ public class UserIdentity {
 	@Column(name = "email_verified_at")
 	private Instant emailVerifiedAt;
 
+	@Column(name = "email_consent_at")
+	private Instant emailConsentAt;
+
 	@Column(name = "created_at", nullable = false)
 	private Instant createdAt;
 
@@ -75,12 +82,20 @@ public class UserIdentity {
 
 	/**
 	 * @param provider 소셜 제공자. LOCAL은 {@link #local}로 만든다
+	 * @param email 정규화(소문자·공백 제거)된 이메일. 입력하지 않았으면 null
+	 * @param emailConsentAt 이메일 수집·이용 선택 동의 시각. email이 있으면 필수이고, 없으면 무시한다
 	 */
-	public static UserIdentity social(User user, AuthProvider provider, String providerUserId) {
+	public static UserIdentity social(User user, AuthProvider provider, String providerUserId, String email,
+			Instant emailConsentAt) {
 		if (provider == AuthProvider.LOCAL) {
 			throw new IllegalArgumentException("LOCAL 인증 수단은 local()로 만든다.");
 		}
-		return new UserIdentity(user, provider, providerUserId, null, null);
+		if (email != null && emailConsentAt == null) {
+			throw new IllegalArgumentException("소셜 이메일은 수집·이용 동의 시각과 함께 저장한다.");
+		}
+		UserIdentity identity = new UserIdentity(user, provider, providerUserId, email, null);
+		identity.emailConsentAt = email == null ? null : emailConsentAt;
+		return identity;
 	}
 
 	/**
@@ -93,6 +108,11 @@ public class UserIdentity {
 
 	public boolean isLocal() {
 		return provider == AuthProvider.LOCAL;
+	}
+
+	/** 소유 확인 대상인지. LOCAL은 항상, 소셜은 온보딩에서 이메일을 입력했을 때만 true다(ADR-016). */
+	public boolean hasEmail() {
+		return email != null;
 	}
 
 	public boolean isEmailVerified() {

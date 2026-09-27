@@ -5,7 +5,7 @@
 ## 준비
 
 1. 로컬 PostgreSQL에 `reused_demo_local`처럼 이름이 `reused_demo_`로 시작하는 **별도 빈 DB**를 만든다. 기존 `reused` 또는 실제 서비스 DB를 재사용하지 않는다.
-2. 빈 DB에는 SQL을 수동 적용하지 않는다. 백엔드 기동 시 Flyway가 `schema/` 원본에서 패키징한 V1~V3를 순서대로 적용한다.
+2. 빈 DB에는 SQL을 수동 적용하지 않는다. 백엔드 기동 시 Flyway가 `schema/` 원본에서 패키징한 V1~V4를 순서대로 적용한다.
 3. 로컬 Redis를 실행한다. 데모 시드 자체는 Redis에 쓰지 않지만 로그인·API 실행에 필요하다.
 
 PowerShell에서 예를 들어 다음처럼 새 DB를 만들 수 있다. `psql` 접속 계정·비밀번호는 자신의 로컬 개발 환경에 맞춘다.

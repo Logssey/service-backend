@@ -85,7 +85,7 @@ class AuthIntegrationTest {
 	}
 
 	@Test
-	@DisplayName("가입하면 Access Token과 Refresh 쿠키를 받고 KAKAO 인증 수단과 알림 설정이 함께 만들어진다")
+	@DisplayName("이메일 없이 온보딩하면 Access Token과 Refresh 쿠키를 받고 KAKAO 인증 수단과 알림 설정이 함께 만들어진다")
 	void signupCreatesUserIdentityAndNotificationSettings() throws Exception {
 		String signupToken = signupTokenFromLogin();
 
@@ -105,13 +105,15 @@ class AuthIntegrationTest {
 		assertThat(userCount).isEqualTo(1);
 		assertThat(settingsCount).isEqualTo(1);
 
-		// 인증 수단은 users가 아니라 user_identities에 저장된다(ADR-017). 소셜 계정은 이메일·비밀번호가 없다.
+		// 인증 수단은 users가 아니라 user_identities에 저장된다(ADR-017). 이메일 없이 온보딩하면 이메일·동의 시각이 없고,
+		// 소셜 계정은 비밀번호를 두지 않는다. 이메일을 입력한 온보딩은 SocialEmailIntegrationTest가 다룬다.
 		java.util.Map<String, Object> identity = jdbcTemplate.queryForMap(
-				"SELECT provider, provider_user_id, email, password_hash FROM user_identities");
+				"SELECT provider, provider_user_id, email, password_hash, email_consent_at FROM user_identities");
 		assertThat(identity.get("provider")).isEqualTo("KAKAO");
 		assertThat(identity.get("provider_user_id")).isEqualTo(KAKAO_USER_ID);
 		assertThat(identity.get("email")).isNull();
 		assertThat(identity.get("password_hash")).isNull();
+		assertThat(identity.get("email_consent_at")).isNull();
 	}
 
 	@Test
