@@ -116,8 +116,7 @@ class LocalDemoSeederIntegrationTest {
 		@ServiceConnection
 		PostgreSQLContainer postgresContainer() {
 			return new PostgreSQLContainer(DockerImageName.parse("postgres:18.6-alpine"))
-					.withDatabaseName("reused_demo_test")
-					.withInitScripts("schema/001_init.sql", "schema/002_seed_categories.sql", "schema/003_profile_images.sql");
+					.withDatabaseName("reused_demo_test");
 		}
 
 		@Bean

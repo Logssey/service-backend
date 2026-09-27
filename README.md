@@ -47,6 +47,8 @@ Mailpit 웹 UI는 `http://localhost:8025`. 이메일 인증·비밀번호 재설
 2. 정확히 `V1`까지만 적용된 DB는 baseline version `1`, `V2`까지는 `2`, `V3`까지는 `3`으로 정한다. Flyway CLI의 연결 정보(`FLYWAY_URL`, `FLYWAY_USER`, `FLYWAY_PASSWORD`)는 검증된 대상과 비밀값 저장소에서 주입하고, 예를 들어 `V3`까지 동일한 DB에만 `flyway -baselineVersion=3 baseline`을 한 번 실행한다. `baseline`은 기존 SQL을 검증·재실행하지 않고 해당 버전까지 적용된 것으로 기록한다.
 3. `flyway info`에서 기준선과 대상 DB를 다시 확인한 다음 애플리케이션을 기동한다. 기준선보다 뒤의 마이그레이션만 적용된다. 배포 전에 같은 상태를 복제한 일회용 DB에서 절차를 연습한다. CI/CD에는 기존 DB를 자동 baseline하는 작업을 넣지 않는다.
 
+화면·API 시연용 가상 데이터는 [로컬 데모 가이드](scripts/README-demo.md)에 따라 별도의 새 `reused_demo_*` DB에만 명시적으로 생성한다. 일반 로컬 DB·CI·운영에는 자동 시드하지 않는다.
+
 ### 3. 환경변수와 기동
 
 시크릿은 설정 파일에 두지 않고 환경변수로 주입한다(`NFR-CRED-007`). `application.properties`에는 플레이스홀더만 있다.

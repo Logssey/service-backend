@@ -5,16 +5,13 @@
 ## 준비
 
 1. 로컬 PostgreSQL에 `reused_demo_local`처럼 이름이 `reused_demo_`로 시작하는 **별도 빈 DB**를 만든다. 기존 `reused` 또는 실제 서비스 DB를 재사용하지 않는다.
-2. 이 브랜치 기준으로 `schema/001_init.sql`, `schema/002_seed_categories.sql`, `schema/003_profile_images.sql`을 순서대로 **한 번만** 적용한다. 향후 Flyway 기준선이 도입되면 그 마이그레이션 절차를 대신 사용하고 두 방식을 중복 적용하지 않는다.
+2. 빈 DB에는 SQL을 수동 적용하지 않는다. 백엔드 기동 시 Flyway가 `schema/` 원본에서 패키징한 V1~V3를 순서대로 적용한다.
 3. 로컬 Redis를 실행한다. 데모 시드 자체는 Redis에 쓰지 않지만 로그인·API 실행에 필요하다.
 
-PowerShell에서 예를 들어 다음처럼 새 DB를 만들고 스키마를 적용할 수 있다. `psql` 접속 계정·비밀번호는 자신의 로컬 개발 환경에 맞춘다.
+PowerShell에서 예를 들어 다음처럼 새 DB를 만들 수 있다. `psql` 접속 계정·비밀번호는 자신의 로컬 개발 환경에 맞춘다.
 
 ```powershell
 psql -h 127.0.0.1 -U reused -d postgres -c 'CREATE DATABASE reused_demo_local'
-psql -h 127.0.0.1 -U reused -d reused_demo_local -v ON_ERROR_STOP=1 -f schema/001_init.sql
-psql -h 127.0.0.1 -U reused -d reused_demo_local -v ON_ERROR_STOP=1 -f schema/002_seed_categories.sql
-psql -h 127.0.0.1 -U reused -d reused_demo_local -v ON_ERROR_STOP=1 -f schema/003_profile_images.sql
 ```
 
 ## 시드 실행
