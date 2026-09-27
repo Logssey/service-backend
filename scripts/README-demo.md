@@ -25,7 +25,7 @@ docker exec reused-postgres psql -U reused -d postgres -c 'CREATE DATABASE reuse
 백엔드를 **호스트에서** 실행하며 다음 환경값을 그 프로세스에만 전달한다. DB JDBC 주소의 호스트는 `localhost`·`127.0.0.1`·`::1` 중 하나여야 하고, 실제 DB 이름도 `reused_demo_`로 시작해야 한다. 둘 중 하나라도 아니면 데이터 생성 전에 시작이 거부된다. `local-demo` 프로필과 `APP_DEMO_SEED=true`가 **동시에** 필요하다.
 
 ```powershell
-$env:SPRING_PROFILES_ACTIVE = 'local-demo'
+$env:SPRING_PROFILES_ACTIVE = 'local,local-demo'
 $env:APP_DEMO_SEED = 'true'
 $env:APP_DEMO_PASSWORD = '<개발 전용 임의 비밀번호 8~128자>'
 $env:SPRING_DATASOURCE_URL = 'jdbc:postgresql://127.0.0.1:5432/reused_demo_local'
@@ -33,12 +33,13 @@ $env:SPRING_DATASOURCE_USERNAME = '<로컬 DB 계정>'
 $env:SPRING_DATASOURCE_PASSWORD = '<로컬 DB 비밀번호>'
 $env:SPRING_DATA_REDIS_HOST = '127.0.0.1'
 $env:JWT_SECRET = '<로컬 전용 32바이트 이상 문자열>'
-$env:KAKAO_CLIENT_ID = 'unused-local-demo'
+$env:APP_AUTH_COOKIE_SECURE = 'false'
 $env:DEBUG = 'false'
 .\gradlew.bat bootRun
 ```
 
 `APP_DEMO_PASSWORD`는 샘플 계정 세 개의 공통 **개발 전용 비밀번호**이며 저장소에 기록되지 않는다. 만들어지는 이메일은 발송되지 않는 `.invalid` 도메인이다.
+함께 켠 `local` 프로필은 카카오 대역을 사용하고, `APP_AUTH_COOKIE_SECURE=false`는 HTTP 로컬 개발에서 새로고침 토큰 쿠키가 동작하게 한다. 운영에서는 이 값을 사용하지 않는다.
 
 | 계정 | 이메일 | 역할 |
 | --- | --- | --- |
