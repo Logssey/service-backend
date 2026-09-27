@@ -16,6 +16,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 @ConfigurationProperties(prefix = "app.chatbot")
 public record ChatbotProperties(
 		@DefaultValue("true") boolean enabled,
+		@DefaultValue("false") boolean freeInputEnabled,
 		@DefaultValue("5") int rateLimit,
 		@DefaultValue("1m") Duration rateWindow,
 		@DefaultValue ExecutorSettings executor,
