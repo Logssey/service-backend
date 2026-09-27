@@ -30,6 +30,7 @@ dependencies {
 	// Argon2PasswordEncoder가 Bouncy Castle 구현을 사용한다(business-rules 정책 값: argon2id).
 	implementation 'org.bouncycastle:bcprov-jdk18on:1.81'
 	implementation 'org.springframework.boot:spring-boot-starter-actuator'
+	implementation 'org.springframework.boot:spring-boot-starter-flyway'
 	implementation platform('software.amazon.awssdk:bom:2.55.4')
 	implementation 'software.amazon.awssdk:s3'
 	implementation 'com.twelvemonkeys.imageio:imageio-webp:3.15.2'
@@ -37,6 +38,7 @@ dependencies {
 	implementation 'com.anthropic:anthropic-java:2.34.0'
 	compileOnly 'org.projectlombok:lombok'
 	runtimeOnly 'org.postgresql:postgresql'
+	runtimeOnly 'org.flywaydb:flyway-database-postgresql'
 	annotationProcessor 'org.projectlombok:lombok'
 	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
 	testImplementation 'org.springframework.boot:spring-boot-starter-data-redis-test'
@@ -51,11 +53,17 @@ dependencies {
 	testAnnotationProcessor 'org.projectlombok:lombok'
 }
 
-// 스키마 스크립트를 테스트 클래스패스로 복사해 Testcontainers가 초기화에 사용한다.
-// 운영과 테스트가 같은 파일을 쓰도록 하기 위함이며, 사본을 따로 두지 않는다.
-tasks.named('processTestResources') {
+// schema/*.sql is the single source; package Flyway migrations for runtime and tests.
+def migrationNames = [
+	'001_init.sql': 'V1__init.sql',
+	'002_seed_categories.sql': 'V2__seed_categories.sql',
+	'003_profile_images.sql': 'V3__profile_images.sql'
+]
+tasks.named('processResources') {
 	from("$projectDir/schema") {
-		into 'schema'
+		include migrationNames.keySet()
+		into 'db/migration'
+		rename { name -> migrationNames[name] }
 	}
 }
 
