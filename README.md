@@ -74,9 +74,10 @@ docker exec reused-postgres psql -U reused -d reused -f /tmp/003_profile_images.
 | `IMAGE_CLEANUP_INTERVAL` | | 고아 이미지 정리 주기. 기본 `1h` |
 | `IMAGE_UNATTACHED_LIMIT` | | 사용자별 미연결 이미지 상한. 기본 `20` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | 로컬 S3 사용 시 | AWS SDK 기본 자격증명 체인을 사용한다. 운영에서는 정적 키 대신 workload role을 사용한다 |
-| `ANTHROPIC_API_KEY` | | 챗봇 자유 입력 답변용 LLM 키. 비어 있으면 추천 질문만 동작하고 자유 입력은 503이다 |
+| `ANTHROPIC_API_KEY` | | 자유 입력용 LLM 키. 키가 있어도 자유 입력은 기본 차단된다 |
 | `ANTHROPIC_BASE_URL` | | LLM API 주소. 게이트웨이를 거칠 때만 둔다. 기본은 SDK 기본 주소 |
 | `CHATBOT_ENABLED` | | `false`면 챗봇 두 엔드포인트가 모두 503이다(ADR-003 비활성화 스위치). 기본 `true` |
+| `CHATBOT_FREE_INPUT_ENABLED` | | 기본 `false`. 추천 질문은 유지하고 자유 입력만 503으로 차단한다. 개인정보 외부 전송 정책 검토 전에는 활성화하지 않는다 |
 
 ```bash
 export SPRING_PROFILES_ACTIVE="local"

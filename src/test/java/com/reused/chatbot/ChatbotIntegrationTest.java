@@ -68,7 +68,7 @@ import com.reused.user.entity.UserRole;
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
 @AutoConfigureMockMvc
-@TestPropertySource(properties = "app.chatbot.llm.timeout=1s")
+@TestPropertySource(properties = {"app.chatbot.llm.timeout=1s", "app.chatbot.free-input-enabled=true"})
 class ChatbotIntegrationTest {
 
 	private static final String PASSWORD = "hunter22!pw";
