@@ -15,7 +15,8 @@ import com.reused.common.error.ErrorCode;
  * 이메일 소유 확인·비밀번호 재설정 코드와 발송 제한(ADR-016, NFR-AUTH-017).
  *
  * <p>키는 redis-keys.md를 따르며 식별자는 이메일이 아니라 identityId다. 이메일을 키에 넣으면
- * SLOWLOG·모니터링에 개인정보가 남는다(NFR-LOG-003).
+ * SLOWLOG·모니터링에 개인정보가 남는다(NFR-LOG-003). verify·resend 키는 이메일이 등록된 모든 인증 수단에,
+ * reset 키는 LOCAL 인증 수단에만 쓴다(ADR-016).
  * <ul>
  *   <li>{@code reused:auth:{verify|reset}:{identityId}} — 코드. TTL 10분
  *   <li>{@code reused:auth:{verify|reset}-try:{identityId}} — 검증 시도 횟수. 코드와 같은 TTL
@@ -61,6 +62,17 @@ public class AuthCodeStore {
 	 * @throws BusinessException INVALID_INPUT 또는 RATE_LIMITED
 	 */
 	public void consume(CodePurpose purpose, Long identityId, String code) {
+		check(purpose, identityId, code);
+		discard(purpose, identityId);
+	}
+
+	/**
+	 * {@link #consume}과 같게 검증하고 시도를 세지만 코드를 폐기하지 않는다. 코드가 맞은 뒤에도 요청을 거절할 수 있는
+	 * 호출자가 쓴다. 성공 처리를 마쳤으면 {@link #discard}로 폐기한다.
+	 *
+	 * @throws BusinessException INVALID_INPUT 또는 RATE_LIMITED
+	 */
+	public void check(CodePurpose purpose, Long identityId, String code) {
 		String codeKey = codeKey(purpose, identityId);
 		String tryKey = tryKey(purpose, identityId);
 
@@ -84,9 +96,12 @@ public class AuthCodeStore {
 				stored.getBytes(StandardCharsets.UTF_8), code.getBytes(StandardCharsets.UTF_8))) {
 			throw invalidCode();
 		}
+	}
 
-		redis.delete(codeKey);
-		redis.delete(tryKey);
+	/** 코드와 시도 횟수를 폐기한다(1회 사용). */
+	public void discard(CodePurpose purpose, Long identityId) {
+		redis.delete(codeKey(purpose, identityId));
+		redis.delete(tryKey(purpose, identityId));
 	}
 
 	/**

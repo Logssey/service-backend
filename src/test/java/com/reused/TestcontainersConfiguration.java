@@ -18,7 +18,8 @@ public class TestcontainersConfiguration {
 	@ServiceConnection
 	PostgreSQLContainer postgresContainer() {
 		return new PostgreSQLContainer(DockerImageName.parse("postgres:18.6-alpine"))
-				.withInitScripts("schema/001_init.sql", "schema/002_seed_categories.sql", "schema/003_profile_images.sql");
+				.withInitScripts("schema/001_init.sql", "schema/002_seed_categories.sql", "schema/003_profile_images.sql",
+						"schema/004_social_identity_email.sql");
 	}
 
 	@Bean

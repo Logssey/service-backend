@@ -1,5 +1,6 @@
 package com.reused.user;
 
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -36,7 +37,8 @@ import com.reused.auth.mail.AuthMailSender;
 import com.reused.user.entity.AuthProvider;
 
 /**
- * 내 정보 조회 통합 테스트. 인증 수단(provider)과 이메일 소유 확인 여부가 user_identities에서 오는지 검증한다.
+ * 내 정보 조회 통합 테스트. 인증 수단(provider)·이메일·이메일 소유 확인 여부가 user_identities에서 오는지 검증한다.
+ * 이메일을 입력한 소셜 계정의 경우는 SocialEmailIntegrationTest가 다룬다.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -76,7 +78,7 @@ class MyProfileIntegrationTest {
 	}
 
 	@Test
-	@DisplayName("카카오 계정은 provider=KAKAO, emailVerified=false이고 기본 상태와 가입 시각이 담긴다")
+	@DisplayName("이메일 없이 온보딩한 카카오 계정은 provider=KAKAO, email=null, emailVerified=false이고 기본 상태와 가입 시각이 담긴다")
 	void kakaoUserProfile() throws Exception {
 		String accessToken = signupKakaoUser("재현");
 
@@ -88,18 +90,20 @@ class MyProfileIntegrationTest {
 				.andExpect(jsonPath("$.status").value("ACTIVE"))
 				.andExpect(jsonPath("$.suspendedUntil").doesNotExist())
 				.andExpect(jsonPath("$.provider").value("KAKAO"))
+				.andExpect(jsonPath("$.email").value(nullValue()))
 				.andExpect(jsonPath("$.emailVerified").value(false))
 				.andExpect(jsonPath("$.createdAt").isString());
 	}
 
 	@Test
-	@DisplayName("이메일 계정은 provider=LOCAL이고 소유 확인 전에는 false, 확인 뒤에는 true다")
+	@DisplayName("이메일 계정은 provider=LOCAL, email=가입 이메일이고 소유 확인 전에는 false, 확인 뒤에는 true다")
 	void localUserEmailVerifiedFollowsConfirmation() throws Exception {
 		String accessToken = signupLocalUser("재현");
 
 		mockMvc.perform(me(accessToken))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.provider").value("LOCAL"))
+				.andExpect(jsonPath("$.email").value(EMAIL))
 				.andExpect(jsonPath("$.emailVerified").value(false));
 
 		mockMvc.perform(json(post("/api/v1/auth/email/verification/confirm"), Map.of("code", lastVerificationCode()))
@@ -112,14 +116,15 @@ class MyProfileIntegrationTest {
 	}
 
 	@Test
-	@DisplayName("응답에 이메일·비밀번호 해시 같은 인증 수단 내부 값은 없다")
+	@DisplayName("본인 응답의 email은 본인 주소이고, 비밀번호 해시·제공자 회원번호 같은 인증 수단 내부 값은 없다")
 	void credentialsAreNotExposed() throws Exception {
 		String accessToken = signupLocalUser("재현");
 
 		mockMvc.perform(me(accessToken))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.email").doesNotExist())
+				.andExpect(jsonPath("$.email").value(EMAIL))
 				.andExpect(jsonPath("$.passwordHash").doesNotExist())
+				.andExpect(jsonPath("$.emailConsentAt").doesNotExist())
 				.andExpect(jsonPath("$.providerUserId").doesNotExist());
 	}
 

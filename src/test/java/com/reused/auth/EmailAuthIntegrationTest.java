@@ -388,14 +388,16 @@ class EmailAuthIntegrationTest {
 	}
 
 	@Test
-	@DisplayName("소셜 계정은 확인할 이메일이 없어 재발송이 409다")
-	void resendForSocialAccountIsConflict() throws Exception {
+	@DisplayName("이메일 없이 온보딩한 소셜 계정은 확인할 이메일이 없어 재발송이 409다")
+	void resendForSocialAccountWithoutEmailIsConflict() throws Exception {
 		String kakaoAccessToken = signupKakaoUser();
 
 		mockMvc.perform(post("/api/v1/auth/email/verification")
 						.header("Authorization", "Bearer " + kakaoAccessToken))
 				.andExpect(status().isConflict())
-				.andExpect(jsonPath("$.code").value("CONFLICT"));
+				.andExpect(jsonPath("$.code").value("CONFLICT"))
+				.andExpect(jsonPath("$.message").value("등록된 이메일이 없습니다."));
+		verify(mailSender, never()).sendVerificationCode(any(), any());
 	}
 
 	@Test
@@ -526,10 +528,13 @@ class EmailAuthIntegrationTest {
 		return captor.getValue();
 	}
 
-	/** 재발송 간격 잠금(60초)을 테스트에서 기다릴 수 없으므로 키를 직접 지운다. */
+	/**
+	 * 재발송 간격 잠금(60초)을 테스트에서 기다릴 수 없으므로 키를 직접 지운다.
+	 * 소셜 인증 수단도 이메일을 가질 수 있으므로(ADR-016) 제공자를 함께 조건에 넣는다.
+	 */
 	private void clearResendGap() {
 		Long identityId = jdbcTemplate.queryForObject(
-				"SELECT identity_id FROM user_identities WHERE email = ?", Long.class, EMAIL);
+				"SELECT identity_id FROM user_identities WHERE provider = 'LOCAL' AND email = ?", Long.class, EMAIL);
 		redisTemplate.delete("reused:auth:resend-gap:" + identityId);
 	}
 
