@@ -7,7 +7,7 @@ Re:Used 중고거래 플랫폼의 API 서버. 요구사항·설계·API 계약�
 | 구분 | 선택 | 근거 |
 | --- | --- | --- |
 | 프레임워크 | Spring Boot 4.1, Java 21, Gradle | ADR-001 |
-| 데이터베이스 | PostgreSQL 18.6, JPA(Hibernate). 스키마는 SQL 스크립트로만 관리 | ADR-009, database-ddl.md |
+| 데이터베이스 | PostgreSQL 18.6, JPA(Hibernate), Flyway 버전 관리 | ADR-009, database-ddl.md |
 | 공유 상태 | Redis 7 (Refresh Token, 인증 코드, 분산 락) | ADR-010, redis-keys.md |
 | 이미지 저장소 | 비공개 S3 + 짧은 수명의 Presigned URL | ADR-011 |
 | 인증 | JWT Access Token + Redis 화이트리스트 Refresh Token | ADR-005 |
@@ -35,22 +35,17 @@ docker run -d --name reused-mailpit -p 1025:1025 -p 8025:8025 axllent/mailpit
 
 Mailpit 웹 UI는 `http://localhost:8025`. 이메일 인증·비밀번호 재설정 코드는 메일 본문에만 존재하므로 여기서 확인한다.
 
-### 2. 스키마 적용
+### 2. DB 스키마와 마이그레이션
 
-Hibernate가 테이블을 만들지 않는다(`ddl-auto=none`). `schema/` 아래 스크립트를 번호 순서대로 적용한다.
+**새 빈 DB**에서 애플리케이션을 시작하면 Flyway가 `V1` 초기 스키마, `V2` 카테고리 기준 데이터, `V3` 프로필 이미지 변경을 순서대로 적용한다. Hibernate는 테이블을 만들지 않는다(`ddl-auto=none`). `schema/001_init.sql`·`002_seed_categories.sql`·`003_profile_images.sql`이 저장소의 유일한 SQL 원본이고, Gradle `processResources`가 이 파일들을 `db/migration/V1__init.sql` 등으로 JAR에 패키징한다. SQL 사본을 따로 수정하지 않는다. 새 변경은 `schema/`에 다음 번호 파일을 추가하고 `build.gradle`의 패키징 매핑에 등록한다.
 
-```bash
-docker cp schema/001_init.sql reused-postgres:/tmp/001_init.sql
-docker cp schema/002_seed_categories.sql reused-postgres:/tmp/002_seed_categories.sql
-docker cp schema/003_profile_images.sql reused-postgres:/tmp/003_profile_images.sql
-docker exec reused-postgres psql -U reused -d reused -f /tmp/001_init.sql
-docker exec reused-postgres psql -U reused -d reused -f /tmp/002_seed_categories.sql
-docker exec reused-postgres psql -U reused -d reused -f /tmp/003_profile_images.sql
-```
+**기존 데이터가 있는 DB**에는 자동 기준선 설정을 사용하지 않는다(`spring.flyway.baseline-on-migrate=false`). `flyway_schema_history`가 없는 비어 있지 않은 DB로 새 버전을 기동하면 안전하게 실패한다. 기존 `reused`·`reused_web_20260926` 및 운영 DB에는 이 문서의 절차를 검토 없이 실행하지 않는다.
 
-기존 DB에는 이미 실행한 001·002를 재실행하지 않고 새 003만 한 번 적용한다. 데이터 초기화가 필요한 개발용 DB만 별도로 재생성한다. 운영 DB는 임의로 초기화하지 않는다.
+기존 DB를 도입할 때는 담당자가 다음을 수동으로 수행한다.
 
-003을 아직 적용하지 않은 환경에서도 기존 LISTING 이미지 API는 동작한다. PROFILE 업로드·연결 변경은 마이그레이션이 적용될 때까지 503으로 거부한다. 애플리케이션이 운영 DDL을 자동 변경하지 않는다.
+1. 대상 DB의 서버·DB명·스키마를 읽기 전용으로 확인하고 백업과 복구 가능성을 확인한다. 실제 스키마를 `schema/` SQL과 비교한다. `users`, `categories`, `listing_images` 등 전체 테이블과 제약 조건을 확인하고, `V2` 여부는 카테고리 기준 데이터, `V3` 여부는 `listing_images.purpose`·`profile_user_id` 컬럼으로 판단한다. 일부만 적용되었거나 문서와 다른 DB라면 중단하고 별도 수정 계획을 세운다.
+2. 정확히 `V1`까지만 적용된 DB는 baseline version `1`, `V2`까지는 `2`, `V3`까지는 `3`으로 정한다. Flyway CLI의 연결 정보(`FLYWAY_URL`, `FLYWAY_USER`, `FLYWAY_PASSWORD`)는 검증된 대상과 비밀값 저장소에서 주입하고, 예를 들어 `V3`까지 동일한 DB에만 `flyway -baselineVersion=3 baseline`을 한 번 실행한다. `baseline`은 기존 SQL을 검증·재실행하지 않고 해당 버전까지 적용된 것으로 기록한다.
+3. `flyway info`에서 기준선과 대상 DB를 다시 확인한 다음 애플리케이션을 기동한다. 기준선보다 뒤의 마이그레이션만 적용된다. 배포 전에 같은 상태를 복제한 일회용 DB에서 절차를 연습한다. CI/CD에는 기존 DB를 자동 baseline하는 작업을 넣지 않는다.
 
 ### 3. 환경변수와 기동
 
@@ -112,7 +107,7 @@ export APP_AUTH_COOKIE_SECURE="false"
 ./gradlew test
 ```
 
-통합 테스트는 실제 PostgreSQL·Redis 컨테이너 위에서 돌고, `schema/` 스크립트를 그대로 적용한다. 외부 시스템(카카오 API, SMTP, S3)만 인터페이스 뒤의 대역으로 바꾼다.
+통합 테스트는 Testcontainers의 새 PostgreSQL·Redis 위에서 돌고, 애플리케이션 기동 시 운영 JAR와 동일한 Flyway 마이그레이션이 적용된다. PostgreSQL 컨테이너의 초기화 스크립트는 사용하지 않는다. 외부 시스템(카카오 API, SMTP, S3)만 인터페이스 뒤의 대역으로 바꾼다.
 
 ### 실시간 채팅과 전체 흐름 검증
 
@@ -168,7 +163,7 @@ com.reused
 
 ## 규칙
 
-- **스키마는 문서에서 코드로만 흐른다.** `schema/*.sql`은 설계 문서 `database-ddl.md`의 사본이다. 컬럼을 바꾸려면 문서 PR을 먼저 올리고 그 결과를 복사해 온다.
+- **스키마는 문서에서 코드로만 흐른다.** `schema/*.sql`은 설계 문서 `database-ddl.md`에 대응하는 마이그레이션의 유일한 원본이다. 이미 적용된 버전은 수정하지 않고 다음 번호의 변경 스크립트를 추가한다. 컬럼을 바꾸려면 설계 문서도 함께 갱신한다.
 - **DTO는 문서 이름 그대로.** 요청은 `*Request`, 응답은 `*Response`, 목록은 `CursorPageResponse<T>`. 엔티티를 직접 응답하지 않는다.
 - **오류는 `BusinessException(ErrorCode, message)`로.** 스택 트레이스, 쿼리, 내부 식별자를 응답에 넣지 않는다.
 - **정책 값은 설정으로.** 토큰 수명, 코드 유효기간, 시도 제한 같은 값은 `@ConfigurationProperties`로 두고 코드 상수로 박지 않는다.
