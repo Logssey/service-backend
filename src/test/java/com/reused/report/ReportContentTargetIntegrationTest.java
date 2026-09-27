@@ -9,11 +9,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import jakarta.servlet.http.Cookie;
 
@@ -24,8 +22,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
@@ -44,17 +45,25 @@ import com.reused.auth.mail.AuthMailSender;
 import com.reused.common.error.BusinessException;
 import com.reused.common.error.ErrorCode;
 import com.reused.report.RecordingContentModerationPort.Call;
-import com.reused.report.api.ReportTargetType;
 import com.reused.user.entity.AuthProvider;
 
 /**
- * 게시글·메시지·커뮤니티 대상 신고. 대상 도메인 구현은 {@link FakeReportTargetsConfiguration}의 대역이다.
- * 대상 해석(404·본인 대상 400), 관리자 목록의 요약, 콘텐츠 조치 포트 호출과 그 감사·알림, 작성자 정지를 확인한다.
+ * 실제 PostgreSQL 게시글·메시지·커뮤니티 행을 신고한다. 콘텐츠 조치 자체만 기록 대역으로 교체한다.
+ * 대상 해석(404·본인 대상 400), 관리자 목록의 요약, 조치 포트 호출과 그 감사·알림, 작성자 정지를 확인한다.
  */
-@Import({ TestcontainersConfiguration.class, FakeReportTargetsConfiguration.class })
+@Import({ TestcontainersConfiguration.class, ReportContentTargetIntegrationTest.ModerationRecordingConfiguration.class })
 @SpringBootTest
 @AutoConfigureMockMvc
 class ReportContentTargetIntegrationTest {
+
+	@TestConfiguration(proxyBeanMethods = false)
+	static class ModerationRecordingConfiguration {
+		@Bean
+		@Primary
+		RecordingContentModerationPort recordingContentModerationPort() {
+			return new RecordingContentModerationPort();
+		}
+	}
 
 	private static final String PASSWORD = "hunter22!pw";
 	private static final long LISTING_ID = 101L;
@@ -78,9 +87,6 @@ class ReportContentTargetIntegrationTest {
 	private StringRedisTemplate redisTemplate;
 
 	@Autowired
-	private List<FakeReportTargetResolver> fakeResolvers;
-
-	@Autowired
 	private RecordingContentModerationPort contentModeration;
 
 	@MockitoBean
@@ -88,8 +94,6 @@ class ReportContentTargetIntegrationTest {
 
 	@MockitoBean
 	private OAuthProviderClient kakaoOAuthClient;
-
-	private final Map<ReportTargetType, FakeReportTargetResolver> fakes = new EnumMap<>(ReportTargetType.class);
 
 	private Member admin;
 	private Member reporter;
@@ -106,24 +110,12 @@ class ReportContentTargetIntegrationTest {
 		});
 		given(kakaoOAuthClient.provider()).willReturn(AuthProvider.KAKAO);
 		contentModeration.reset();
-		fakeResolvers.forEach(fake -> {
-			fake.clear();
-			fakes.put(fake.type(), fake);
-		});
 
 		admin = admin("admin@example.com", "관리자");
 		reporter = signup("reporter@example.com", "신고자");
 		owner = signup("owner@example.com", "작성자");
 		outsider = signup("outsider@example.com", "제3자");
-
-		fakes.get(ReportTargetType.LISTING).add(LISTING_ID, owner.userId(), "아이패드 프로 11인치");
-		fakes.get(ReportTargetType.LISTING).add(OWN_LISTING_ID, reporter.userId(), "내가 올린 게시글");
-		Set<Long> participants = Set.of(reporter.userId(), owner.userId());
-		fakes.get(ReportTargetType.MESSAGE).addVisibleTo(MESSAGE_ID, owner.userId(), LONG_MESSAGE, participants);
-		fakes.get(ReportTargetType.MESSAGE).addVisibleTo(OWN_MESSAGE_ID, reporter.userId(), "내가 보낸 메시지",
-				participants);
-		fakes.get(ReportTargetType.COMMUNITY_POST).add(POST_ID, owner.userId(), "동네 맛집 추천합니다");
-		fakes.get(ReportTargetType.COMMUNITY_COMMENT).add(COMMENT_ID, owner.userId(), "광고 댓글입니다");
+		seedRealTargets();
 	}
 
 	// --- 신고 접수 ---
@@ -154,6 +146,16 @@ class ReportContentTargetIntegrationTest {
 		assertThat(reportCount()).isZero();
 	}
 
+	@ParameterizedTest(name = "{0}")
+	@CsvSource({ "COMMUNITY_POST, 301", "COMMUNITY_COMMENT, 401" })
+	@DisplayName("커뮤니티 글·댓글 작성자도 본인 콘텐츠를 신고할 수 없다")
+	void ownCommunityContentIsInvalid(String targetType, long targetId) throws Exception {
+		mockMvc.perform(report(owner, targetType, targetId, "SPAM"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
+		assertThat(reportCount()).isZero();
+	}
+
 	@Test
 	@DisplayName("없거나 숨김·삭제된 대상은 404다")
 	void missingOrRemovedContentIsNotFound() throws Exception {
@@ -161,11 +163,50 @@ class ReportContentTargetIntegrationTest {
 				.andExpect(status().isNotFound())
 				.andExpect(jsonPath("$.message").value("신고 대상을 찾을 수 없습니다."));
 
-		fakes.get(ReportTargetType.COMMUNITY_POST).remove(POST_ID);
+		jdbcTemplate.update("UPDATE community_posts SET status = 'HIDDEN' WHERE post_id = ?", POST_ID);
 		mockMvc.perform(report(reporter, "COMMUNITY_POST", POST_ID, "SPAM"))
+				.andExpect(status().isNotFound());
+		mockMvc.perform(report(reporter, "COMMUNITY_COMMENT", COMMENT_ID, "SPAM"))
 				.andExpect(status().isNotFound());
 
 		assertThat(reportCount()).isZero();
+	}
+
+	@Test
+	@DisplayName("숨긴 판매글, 삭제한 메시지, 숨긴 댓글은 새 신고를 받지 않는다")
+	void removedTargetsCannotBeReported() throws Exception {
+		jdbcTemplate.update("UPDATE listings SET status = 'HIDDEN' WHERE listing_id = ?", LISTING_ID);
+		jdbcTemplate.update("UPDATE messages SET deleted_at = now() WHERE message_id = ?", MESSAGE_ID);
+		jdbcTemplate.update("UPDATE community_comments SET status = 'HIDDEN' WHERE comment_id = ?", COMMENT_ID);
+
+		mockMvc.perform(report(reporter, "LISTING", LISTING_ID, "SPAM")).andExpect(status().isNotFound());
+		mockMvc.perform(report(reporter, "MESSAGE", MESSAGE_ID, "SPAM")).andExpect(status().isNotFound());
+		mockMvc.perform(report(reporter, "COMMUNITY_COMMENT", COMMENT_ID, "SPAM"))
+				.andExpect(status().isNotFound());
+		assertThat(reportCount()).isZero();
+	}
+
+	@Test
+	@DisplayName("소프트 삭제된 상품·커뮤니티 글·댓글도 새 신고를 받지 않는다")
+	void softDeletedTargetsCannotBeReported() throws Exception {
+		jdbcTemplate.update("UPDATE listings SET deleted_at = now(), deleted_by = ? WHERE listing_id = ?",
+				owner.userId(), LISTING_ID);
+		jdbcTemplate.update("UPDATE community_comments SET deleted_at = now(), deleted_by = ? WHERE comment_id = ?",
+				owner.userId(), COMMENT_ID);
+		mockMvc.perform(report(reporter, "LISTING", LISTING_ID, "SPAM")).andExpect(status().isNotFound());
+		mockMvc.perform(report(reporter, "COMMUNITY_COMMENT", COMMENT_ID, "SPAM"))
+				.andExpect(status().isNotFound());
+		jdbcTemplate.update("UPDATE community_posts SET deleted_at = now(), deleted_by = ? WHERE post_id = ?",
+				owner.userId(), POST_ID);
+		mockMvc.perform(report(reporter, "COMMUNITY_POST", POST_ID, "SPAM")).andExpect(status().isNotFound());
+	}
+
+	@Test
+	@DisplayName("탈퇴 판매자의 게시글은 공개되지 않으므로 새 신고 대상도 아니다")
+	void withdrawnSellerListingCannotBeReported() throws Exception {
+		jdbcTemplate.update("UPDATE users SET status = 'WITHDRAWN', withdrawn_at = now() WHERE user_id = ?",
+				owner.userId());
+		mockMvc.perform(report(reporter, "LISTING", LISTING_ID, "SPAM")).andExpect(status().isNotFound());
 	}
 
 	@Test
@@ -210,7 +251,10 @@ class ReportContentTargetIntegrationTest {
 		long post = submit(reporter, "COMMUNITY_POST", POST_ID, "SPAM");
 		long comment = submit(reporter, "COMMUNITY_COMMENT", COMMENT_ID, "SPAM");
 		long gone = insertReport(reporter.userId(), "LISTING", 999L, "SPAM");
-		fakes.get(ReportTargetType.COMMUNITY_POST).remove(POST_ID);
+		jdbcTemplate.update("UPDATE community_posts SET status = 'HIDDEN' WHERE post_id = ?", POST_ID);
+		jdbcTemplate.update("UPDATE listings SET status = 'HIDDEN' WHERE listing_id = ?", LISTING_ID);
+		jdbcTemplate.update("UPDATE messages SET deleted_at = now() WHERE message_id = ?", MESSAGE_ID);
+		jdbcTemplate.update("UPDATE community_comments SET status = 'HIDDEN' WHERE comment_id = ?", COMMENT_ID);
 
 		JsonNode page = readJson(mockMvc.perform(get("/api/v1/admin/reports").header("Authorization", admin.bearer()))
 				.andExpect(status().isOk())
@@ -388,6 +432,41 @@ class ReportContentTargetIntegrationTest {
 	}
 
 	// --- helpers ---
+
+	private void seedRealTargets() {
+		Long categoryId = jdbcTemplate.queryForObject("SELECT category_id FROM categories ORDER BY category_id LIMIT 1",
+				Long.class);
+		jdbcTemplate.update("""
+				INSERT INTO listings (listing_id, seller_id, category_id, title, description, price,
+				                     item_condition, trade_method)
+				OVERRIDING SYSTEM VALUE VALUES (?, ?, ?, ?, '신고 테스트 게시글', 10000, 'USED', 'DIRECT')
+				""", LISTING_ID, owner.userId(), categoryId, "아이패드 프로 11인치");
+		jdbcTemplate.update("""
+				INSERT INTO listings (listing_id, seller_id, category_id, title, description, price,
+				                     item_condition, trade_method)
+				OVERRIDING SYSTEM VALUE VALUES (?, ?, ?, ?, '신고 테스트 게시글', 10000, 'USED', 'DIRECT')
+				""", OWN_LISTING_ID, reporter.userId(), categoryId, "내가 올린 게시글");
+		Long roomId = jdbcTemplate.queryForObject("""
+				INSERT INTO chat_rooms (listing_id, seller_id, buyer_id)
+				VALUES (?, ?, ?) RETURNING chat_room_id
+				""", Long.class, LISTING_ID, owner.userId(), reporter.userId());
+		jdbcTemplate.update("""
+				INSERT INTO messages (message_id, chat_room_id, sender_id, content)
+				OVERRIDING SYSTEM VALUE VALUES (?, ?, ?, ?)
+				""", MESSAGE_ID, roomId, owner.userId(), LONG_MESSAGE);
+		jdbcTemplate.update("""
+				INSERT INTO messages (message_id, chat_room_id, sender_id, content)
+				OVERRIDING SYSTEM VALUE VALUES (?, ?, ?, ?)
+				""", OWN_MESSAGE_ID, roomId, reporter.userId(), "내가 보낸 메시지");
+		jdbcTemplate.update("""
+				INSERT INTO community_posts (post_id, author_id, category, title, content)
+				OVERRIDING SYSTEM VALUE VALUES (?, ?, 'GENERAL', ?, '커뮤니티 신고 테스트 게시글입니다')
+				""", POST_ID, owner.userId(), "동네 맛집 추천합니다");
+		jdbcTemplate.update("""
+				INSERT INTO community_comments (comment_id, post_id, author_id, content)
+				OVERRIDING SYSTEM VALUE VALUES (?, ?, ?, '광고 댓글입니다')
+				""", COMMENT_ID, POST_ID, owner.userId());
+	}
 
 	private MockHttpServletRequestBuilder report(Member from, String targetType, long targetId, String reasonCode) {
 		return json(post("/api/v1/reports"), Map.of("targetType", targetType, "targetId", targetId,

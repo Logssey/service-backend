@@ -5,11 +5,16 @@ package com.reused.report.api;
  *
  * <p>감사 기록은 B(신고 처리)가 조치 한 건으로 남긴다. 구현은 감사 로그를 쓰지 않는다.
  *
- * @return 실제로 상태가 바뀌었는가. 이미 숨김·삭제된 대상이면 false(멱등)
+ * <p>boolean 반환 메서드는 실제 상태 변경 여부를 돌려준다. 이미 숨김·삭제된 대상이면 false(멱등).
+ * 상품 숨김은 관리자 복구에 필요한 이전 상태도 함께 돌려준다.
  */
 public interface ContentModerationPort {
 
-	boolean hideListing(long listingId, long adminId, String reason);
+	/** Captured under the listing row lock for the existing admin restore endpoint. */
+	record ListingHideResult(boolean changed, String beforeStatus) {
+	}
+
+	ListingHideResult hideListing(long listingId, long adminId, String reason);
 
 	boolean deleteListing(long listingId, long adminId, String reason);
 

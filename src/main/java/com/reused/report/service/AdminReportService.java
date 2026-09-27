@@ -199,8 +199,10 @@ public class AdminReportService {
 		}
 		long targetId = report.getTargetId();
 		long admin = adminId;
+		ContentModerationPort.ListingHideResult listingHide = action == ReportAction.HIDE_LISTING
+				? port.hideListing(targetId, admin, reason) : null;
 		boolean changed = switch (action) {
-			case HIDE_LISTING -> port.hideListing(targetId, admin, reason);
+			case HIDE_LISTING -> listingHide.changed();
 			case DELETE_LISTING -> port.deleteListing(targetId, admin, reason);
 			case HIDE_COMMUNITY_POST -> port.hideCommunityPost(targetId, admin, reason);
 			case HIDE_COMMUNITY_COMMENT -> port.hideCommunityComment(targetId, admin, reason);
@@ -211,6 +213,10 @@ public class AdminReportService {
 		detail.put("reportId", report.getId());
 		detail.put("reason", reason);
 		detail.put("changed", changed);
+		if (listingHide != null && changed) {
+			detail.put("beforeStatus", listingHide.beforeStatus());
+			detail.put("afterStatus", "HIDDEN");
+		}
 		auditLogger.record(AuditEntry.success(contentAuditAction(action), adminId, contentAuditTarget(action),
 				targetId, detail));
 	}

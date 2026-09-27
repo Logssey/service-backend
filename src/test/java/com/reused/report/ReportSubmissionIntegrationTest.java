@@ -50,8 +50,8 @@ import com.reused.auth.mail.AuthMailSender;
 import com.reused.user.entity.AuthProvider;
 
 /**
- * 신고 접수(POST /reports)와 내 신고 목록(GET /reports/me). 대상은 B가 가진 USER만 해석된다.
- * 다른 유형은 대상 도메인 구현이 없으므로 404이고, 그 해석은 {@link ReportContentTargetIntegrationTest}가 대역으로 본다.
+ * 신고 접수(POST /reports)와 내 신고 목록(GET /reports/me). 존재하는 다른 도메인 대상의 해석은
+ * {@link ReportContentTargetIntegrationTest}가 실제 PostgreSQL 행으로 검증한다.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -300,8 +300,8 @@ class ReportSubmissionIntegrationTest {
 
 	@ParameterizedTest(name = "{0}")
 	@ValueSource(strings = { "LISTING", "MESSAGE", "COMMUNITY_POST", "COMMUNITY_COMMENT" })
-	@DisplayName("대상 도메인 구현이 없는 유형은 대상을 확인할 수 없어 404다")
-	void targetTypeWithoutResolverIsNotFound(String targetType) throws Exception {
+	@DisplayName("존재하지 않는 다른 도메인 대상은 404다")
+	void missingTargetOfOtherTypeIsNotFound(String targetType) throws Exception {
 		mockMvc.perform(report(reporter, targetType, 101L, "OTHER", null))
 				.andExpect(status().isNotFound())
 				.andExpect(jsonPath("$.code").value("NOT_FOUND"));
