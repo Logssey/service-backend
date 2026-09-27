@@ -13,7 +13,7 @@ import com.reused.user.entity.User;
 import com.reused.user.entity.UserIdentity;
 
 /**
- * 인증 수단 생성 규칙(ADR-019). 저장 제약은 {@link UserIdentitySchemaIntegrationTest}가 확인한다.
+ * 인증 수단 생성 규칙(ADR-016). 저장 제약은 {@link UserIdentitySchemaIntegrationTest}가 확인한다.
  */
 class UserIdentityTest {
 

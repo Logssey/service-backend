@@ -39,7 +39,7 @@ public class UserService {
 	 * Access Token은 탈퇴 뒤에도 만료 전까지 서명이 유효하다. 탈퇴했거나 인증 수단이 없는 계정은
 	 * 인증되지 않은 것으로 본다. 토큰 재발급의 탈퇴 처리와 같은 규칙이다.
 	 *
-	 * <p>이메일은 제공자와 무관하게 인증 수단에 등록된 값이다. 소셜 계정은 온보딩에서 입력했을 때만 있다(ADR-019).
+	 * <p>이메일은 제공자와 무관하게 인증 수단에 등록된 값이다. 소셜 계정은 온보딩에서 입력했을 때만 있다(ADR-016).
 	 */
 	@Transactional(readOnly = true)
 	public MyProfileResponse getMyProfile(Long userId) {

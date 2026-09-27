@@ -9,7 +9,7 @@ import com.reused.auth.code.CodePurpose;
 import com.reused.auth.mail.AuthMailSender;
 
 /**
- * 이메일 소유 확인 코드 발송. 이메일 가입(LOCAL)과 이메일을 입력한 소셜 온보딩이 같은 절차를 쓴다(ADR-019).
+ * 이메일 소유 확인 코드 발송. 이메일 가입(LOCAL)과 이메일을 입력한 소셜 온보딩이 같은 절차를 쓴다(ADR-016).
  * 발송 제한·코드 키는 이메일이 아니라 identityId 기준이다({@link AuthCodeStore}).
  *
  * <p>로그에 수신 주소를 남기지 않는다(NFR-LOG-003).

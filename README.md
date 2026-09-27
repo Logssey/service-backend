@@ -54,7 +54,7 @@ docker exec reused-postgres psql -U reused -d reused -f /tmp/004_social_identity
 
 003을 아직 적용하지 않은 환경에서도 기존 LISTING 이미지 API는 동작한다. PROFILE 업로드·연결 변경은 마이그레이션이 적용될 때까지 503으로 거부한다. 애플리케이션이 운영 DDL을 자동 변경하지 않는다.
 
-004(소셜 계정 선택 이메일, ADR-019)는 반드시 애플리케이션 배포 전에 적용한다. 제약 완화와 NULL 허용 컬럼·CHECK·부분 UNIQUE 인덱스 추가뿐이라 기존 버전과 호환된다. 새 애플리케이션은 `user_identities.email_consent_at` 컬럼을 매핑하므로, 004를 적용하지 않은 DB에서는 인증 수단을 조회·저장하는 모든 요청(소셜·이메일 로그인, 이메일 가입, 소셜 온보딩, 소유 확인 코드 발송·확인, 비밀번호 재설정·변경)이 이메일 입력 여부와 무관하게 500으로 실패한다. 적용 전에 `SELECT count(*) FROM user_identities WHERE email IS NULL AND email_verified_at IS NOT NULL`이 0인지 확인한다.
+004(소셜 계정 선택 이메일, ADR-016)는 반드시 애플리케이션 배포 전에 적용한다. 제약 완화와 NULL 허용 컬럼·CHECK·부분 UNIQUE 인덱스 추가뿐이라 기존 버전과 호환된다. 새 애플리케이션은 `user_identities.email_consent_at` 컬럼을 매핑하므로, 004를 적용하지 않은 DB에서는 인증 수단을 조회·저장하는 모든 요청(소셜·이메일 로그인, 이메일 가입, 소셜 온보딩, 소유 확인 코드 발송·확인, 비밀번호 재설정·변경)이 이메일 입력 여부와 무관하게 500으로 실패한다. 적용 전에 `SELECT count(*) FROM user_identities WHERE email IS NULL AND email_verified_at IS NOT NULL`이 0인지 확인한다.
 
 ### 3. 환경변수와 기동
 

@@ -66,7 +66,7 @@ import com.reused.support.AdminTestClient;
 import com.reused.user.entity.AuthProvider;
 
 /**
- * 소셜 온보딩의 선택 이메일(ADR-019). 실제 Postgres·Redis 위에서 돌고 카카오 호출과 메일 발송만 대역으로 바꾼다.
+ * 소셜 온보딩의 선택 이메일(ADR-016). 실제 Postgres·Redis 위에서 돌고 카카오 호출과 메일 발송만 대역으로 바꾼다.
  * 카카오 대역은 인가 코드를 그대로 회원번호로 돌려주어 한 테스트에서 카카오 계정을 여럿 만든다.
  *
  * <p>입력(선택·동의·형식), 커밋 뒤 확인 메일, 소유 확인, 인증 완료 이메일의 소셜 범위 유일성, LOCAL 전용 기능과의 격리,

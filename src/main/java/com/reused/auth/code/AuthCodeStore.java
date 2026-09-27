@@ -16,7 +16,7 @@ import com.reused.common.error.ErrorCode;
  *
  * <p>키는 redis-keys.md를 따르며 식별자는 이메일이 아니라 identityId다. 이메일을 키에 넣으면
  * SLOWLOG·모니터링에 개인정보가 남는다(NFR-LOG-003). verify·resend 키는 이메일이 등록된 모든 인증 수단에,
- * reset 키는 LOCAL 인증 수단에만 쓴다(ADR-019).
+ * reset 키는 LOCAL 인증 수단에만 쓴다(ADR-016).
  * <ul>
  *   <li>{@code reused:auth:{verify|reset}:{identityId}} — 코드. TTL 10분
  *   <li>{@code reused:auth:{verify|reset}-try:{identityId}} — 검증 시도 횟수. 코드와 같은 TTL

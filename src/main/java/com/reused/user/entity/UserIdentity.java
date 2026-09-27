@@ -32,7 +32,7 @@ import lombok.NoArgsConstructor;
  * </ul>
  *
  * <p>emailVerifiedAt이 있으면 email도 있다. 소유 확인을 마친 소셜 이메일은 소셜 인증 수단 사이에서 하나뿐이다
- * (부분 UNIQUE 인덱스, ADR-019).
+ * (부분 UNIQUE 인덱스, ADR-016).
  */
 @Entity
 @Table(name = "user_identities")
@@ -110,7 +110,7 @@ public class UserIdentity {
 		return provider == AuthProvider.LOCAL;
 	}
 
-	/** 소유 확인 대상인지. LOCAL은 항상, 소셜은 온보딩에서 이메일을 입력했을 때만 true다(ADR-019). */
+	/** 소유 확인 대상인지. LOCAL은 항상, 소셜은 온보딩에서 이메일을 입력했을 때만 true다(ADR-016). */
 	public boolean hasEmail() {
 		return email != null;
 	}

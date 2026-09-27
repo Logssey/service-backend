@@ -49,7 +49,7 @@ import com.reused.user.service.NicknamePolicy;
  * 가입·재설정은 {@link TransactionTemplate}으로 DB 작업만 감싼다.
  *
  * <p>소유 확인(재발송·확인)은 이메일이 등록된 모든 인증 수단에 적용한다. LOCAL은 항상, 소셜은 온보딩에서 이메일을
- * 입력했을 때다(ADR-019). 이메일 로그인·가입 중복 검사·비밀번호 재설정·비밀번호 변경은 계속 LOCAL 전용이다.
+ * 입력했을 때다(ADR-016). 이메일 로그인·가입 중복 검사·비밀번호 재설정·비밀번호 변경은 계속 LOCAL 전용이다.
  */
 @Service
 public class EmailAuthService {
@@ -204,7 +204,7 @@ public class EmailAuthService {
 	/**
 	 * 소유 확인 코드 재발송. 대상 주소는 토큰 사용자의 인증 수단에 등록된 이메일이며 바디로 주소를 받지 않는다.
 	 * 이메일을 입력하지 않은 소셜 계정은 대상이 없어 409다. 같은 주소를 다른 소셜 계정이 이미 확인했어도 재발송은
-	 * 막지 않는다. 그 판정은 코드로 소유가 증명된 뒤 {@link #confirmVerification}에서 한다(ADR-019).
+	 * 막지 않는다. 그 판정은 코드로 소유가 증명된 뒤 {@link #confirmVerification}에서 한다(ADR-016).
 	 *
 	 * <p>트랜잭션을 두지 않는다({@link #requestPasswordReset}과 같다). 인증 수단은 기본 컬럼만 쓰므로 조회 한 번으로 끝나고,
 	 * Redis 기록과 동기 SMTP 발송(단계마다 최대 5초)은 커넥션을 쥐지 않은 채 한다.
@@ -225,7 +225,7 @@ public class EmailAuthService {
 	/**
 	 * 발송된 코드로 인증 수단에 등록된 이메일의 소유를 확인한다.
 	 *
-	 * <p>소유 확인을 마친 소셜 이메일은 소셜 인증 수단 사이에서 하나뿐이다(ADR-019). 다른 소셜 계정이 먼저 확인을 마친
+	 * <p>소유 확인을 마친 소셜 이메일은 소셜 인증 수단 사이에서 하나뿐이다(ADR-016). 다른 소셜 계정이 먼저 확인을 마친
 	 * 주소면 409다. 코드가 맞아 소유가 증명된 뒤에만 알리므로 주소 주인이 아닌 사람에게 가입 여부를 드러내지 않고
 	 * (NFR-AUTH-018), 이때 코드는 소비하지 않는다. 검사와 저장 사이의 경합은 부분 UNIQUE 인덱스가 최종 판정하며
 	 * 같은 409로 바꾼다. LOCAL 이메일은 이 판정 대상이 아니다(제공자가 다르면 별개 계정, ADR-016).
@@ -384,7 +384,7 @@ public class EmailAuthService {
 	}
 
 	/**
-	 * 선택 입력 이메일(소셜 온보딩, ADR-019). null·빈 문자열은 입력하지 않은 것으로 보고 null을 돌려준다.
+	 * 선택 입력 이메일(소셜 온보딩, ADR-016). null·빈 문자열은 입력하지 않은 것으로 보고 null을 돌려준다.
 	 * 공백만 있는 값은 요청 검증({@code @Email})에서 이미 400이다.
 	 */
 	static String normalizeOptionalEmail(String email) {

@@ -530,7 +530,7 @@ class EmailAuthIntegrationTest {
 
 	/**
 	 * 재발송 간격 잠금(60초)을 테스트에서 기다릴 수 없으므로 키를 직접 지운다.
-	 * 소셜 인증 수단도 이메일을 가질 수 있으므로(ADR-019) 제공자를 함께 조건에 넣는다.
+	 * 소셜 인증 수단도 이메일을 가질 수 있으므로(ADR-016) 제공자를 함께 조건에 넣는다.
 	 */
 	private void clearResendGap() {
 		Long identityId = jdbcTemplate.queryForObject(

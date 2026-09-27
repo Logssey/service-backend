@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 
 /**
- * 인증 서비스의 패키지 내부 도우미. 선택 이메일 정규화(ADR-019)와 제약 이름 판정.
+ * 인증 서비스의 패키지 내부 도우미. 선택 이메일 정규화(ADR-016)와 제약 이름 판정.
  */
 class AuthServiceSupportTest {
 

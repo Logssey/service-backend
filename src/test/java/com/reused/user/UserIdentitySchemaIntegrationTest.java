@@ -19,7 +19,7 @@ import com.reused.auth.client.OAuthProviderClient;
 import com.reused.auth.mail.AuthMailSender;
 
 /**
- * 004 적용 뒤의 user_identities 제약(ADR-019). 애플리케이션을 거치지 않고 SQL로 넣어 DB가 규칙을 스스로 지키는지 본다.
+ * 004 적용 뒤의 user_identities 제약(ADR-016). 애플리케이션을 거치지 않고 SQL로 넣어 DB가 규칙을 스스로 지키는지 본다.
  * 애플리케이션 경로는 SocialEmailIntegrationTest가 다룬다.
  */
 @Import(TestcontainersConfiguration.class)
