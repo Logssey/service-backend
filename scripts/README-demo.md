@@ -14,6 +14,12 @@ PowerShell에서 예를 들어 다음처럼 새 DB를 만들 수 있다. `psql` 
 psql -h 127.0.0.1 -U reused -d postgres -c 'CREATE DATABASE reused_demo_local'
 ```
 
+위 README의 `reused-postgres` 컨테이너를 사용 중이고 호스트에 `psql`이 없다면 다음 명령으로 **새 DB만** 만들 수 있다.
+
+```powershell
+docker exec reused-postgres psql -U reused -d postgres -c 'CREATE DATABASE reused_demo_local'
+```
+
 ## 시드 실행
 
 백엔드를 **호스트에서** 실행하며 다음 환경값을 그 프로세스에만 전달한다. DB JDBC 주소의 호스트는 `localhost`·`127.0.0.1`·`::1` 중 하나여야 하고, 실제 DB 이름도 `reused_demo_`로 시작해야 한다. 둘 중 하나라도 아니면 데이터 생성 전에 시작이 거부된다. `local-demo` 프로필과 `APP_DEMO_SEED=true`가 **동시에** 필요하다.
