@@ -12,12 +12,14 @@ import com.reused.common.error.ErrorCode;
  *
  * <p>키 {@code reused:auth:login-fail:{identityId}}, TTL 10분(redis-keys.md). 값은 마지막 성공 이후의 시도 수다.
  * 검증 전에 시도를 먼저 세므로 진행 중인 시도도 포함한다. 성공하면 호출자가 {@link #reset}한다.
- * 존재하지 않는 이메일은 identityId가 없어 세지 않는다. 그래도 응답은 계정이 있을 때와 같아야 한다(NFR-AUTH-018).
+ * 존재하지 않는 이메일은 identityId가 없어 {@code reused:auth:login-fail-email:{이메일 해시}}로 같은 한도를 센다.
+ * 계정이 있을 때만 429가 나면 틀린 비밀번호를 한도만큼 보내 보는 것으로 가입 여부가 드러난다(NFR-AUTH-018).
  */
 @Component
 public class LoginAttemptLimiter {
 
 	private static final String KEY_PREFIX = "reused:auth:login-fail:";
+	private static final String EMAIL_KEY_PREFIX = "reused:auth:login-fail-email:";
 
 	private final StringRedisTemplate redis;
 	private final LocalAuthProperties properties;
@@ -37,7 +39,24 @@ public class LoginAttemptLimiter {
 	 * @throws BusinessException RATE_LIMITED 이번 시도가 창 안에서 한도를 넘는 경우
 	 */
 	public void acquire(Long identityId) {
-		String key = KEY_PREFIX + identityId;
+		count(KEY_PREFIX + identityId);
+	}
+
+	/**
+	 * 가입되지 않은 이메일의 시도를 {@link #acquire}와 같은 한도로 센다. 성공할 계정이 없으므로 창이 지나야 풀린다.
+	 *
+	 * @param normalizedEmail 정규화한 이메일
+	 * @throws BusinessException RATE_LIMITED 이번 시도가 창 안에서 한도를 넘는 경우
+	 */
+	public void acquireForUnknownEmail(String normalizedEmail) {
+		count(EMAIL_KEY_PREFIX + EmailKey.of(normalizedEmail));
+	}
+
+	public void reset(Long identityId) {
+		redis.delete(KEY_PREFIX + identityId);
+	}
+
+	private void count(String key) {
 		Long count = redis.opsForValue().increment(key);
 		if (count != null && count == 1L) {
 			redis.expire(key, properties.loginFailWindow());
@@ -45,10 +64,6 @@ public class LoginAttemptLimiter {
 		if (count != null && count > properties.loginFailLimit()) {
 			throw new BusinessException(ErrorCode.RATE_LIMITED, "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.");
 		}
-	}
-
-	public void reset(Long identityId) {
-		redis.delete(KEY_PREFIX + identityId);
 	}
 
 }

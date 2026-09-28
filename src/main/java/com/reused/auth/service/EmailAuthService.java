@@ -166,6 +166,8 @@ public class EmailAuthService {
 				.orElse(null);
 
 		if (identity == null) {
+			// 없는 계정도 같은 한도로 센다. 계정이 있을 때만 429가 나면 가입 여부가 드러난다(NFR-AUTH-018).
+			countLoginAttempt(() -> loginAttemptLimiter.acquireForUnknownEmail(email), null);
 			passwordEncoder.matches(request.password(), dummyPasswordHash);
 			recordLoginFailure(null, AuthAuditEntries.REASON_UNKNOWN_ACCOUNT);
 			throw loginFailed();
@@ -173,13 +175,7 @@ public class EmailAuthService {
 
 		Long userId = identity.getUser().getId();
 		// 시도는 검증 전에 센다. 실패하면 센 그대로 남고, 성공하면 초기화한다.
-		try {
-			loginAttemptLimiter.acquire(identity.getId());
-		}
-		catch (BusinessException e) {
-			recordLoginFailure(userId, AuthAuditEntries.REASON_RATE_LIMITED);
-			throw e;
-		}
+		countLoginAttempt(() -> loginAttemptLimiter.acquire(identity.getId()), userId);
 		if (!passwordEncoder.matches(request.password(), identity.getPasswordHash())) {
 			recordLoginFailure(userId, AuthAuditEntries.REASON_BAD_CREDENTIALS);
 			throw loginFailed();
@@ -262,18 +258,30 @@ public class EmailAuthService {
 	}
 
 	/**
-	 * 계정 유무와 무관하게 정상 종료한다. 코드는 실제로 존재하는 LOCAL 계정에만 발송한다.
+	 * 계정 유무와 무관하게 같은 응답으로 끝난다(NFR-AUTH-018). 코드는 실제로 존재하는 LOCAL 계정에만 발송한다.
+	 *
+	 * <p>발송 제한은 가입되지 않은 주소에도 같은 규칙으로 건다. 메일 발송 실패도 같은 이유로 204로 끝낸다.
+	 * 계정이 있을 때만 429·502가 나면 요청해 보는 것만으로 가입 여부가 드러난다. 실패 원인은 발송기가 기록한다.
+	 * 동기 SMTP 때문에 계정이 있을 때 응답이 더 늦다는 시간 차이는 남아 있다.
 	 */
 	public void requestPasswordReset(String rawEmail) {
 		String email = normalizeEmail(rawEmail);
 		UserIdentity identity = identityRepository.findByProviderAndEmail(AuthProvider.LOCAL, email).orElse(null);
 		if (identity == null) {
+			codeStore.recordSendForUnknownEmail(email);
 			return;
 		}
 
 		codeStore.recordSend(identity.getId());
 		String code = codeStore.issue(CodePurpose.RESET, identity.getId());
-		mailSender.sendPasswordResetCode(email, code);
+		try {
+			mailSender.sendPasswordResetCode(email, code);
+		}
+		catch (BusinessException e) {
+			if (e.errorCode() != ErrorCode.EXTERNAL_SERVICE_ERROR) {
+				throw e;
+			}
+		}
 	}
 
 	/**
@@ -370,6 +378,17 @@ public class EmailAuthService {
 
 	private void recordLoginFailure(Long userId, String reason) {
 		auditLogger.recordSeparately(AuthAuditEntries.loginFailed(userId, AuthProvider.LOCAL, reason));
+	}
+
+	/** 시도를 세고, 한도를 넘었으면 사유를 감사 로그에 남긴 뒤 429를 그대로 던진다. */
+	private void countLoginAttempt(Runnable acquire, Long userId) {
+		try {
+			acquire.run();
+		}
+		catch (BusinessException e) {
+			recordLoginFailure(userId, AuthAuditEntries.REASON_RATE_LIMITED);
+			throw e;
+		}
 	}
 
 	private static BusinessException loginFailed() {

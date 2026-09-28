@@ -22,6 +22,8 @@ import com.reused.common.error.ErrorCode;
  *   <li>{@code reused:auth:{verify|reset}-try:{identityId}} — 검증 시도 횟수. 코드와 같은 TTL
  *   <li>{@code reused:auth:resend:{identityId}} — 발송 횟수. TTL 1시간
  *   <li>{@code reused:auth:resend-gap:{identityId}} — 발송 간격 잠금. 존재 자체가 잠금. TTL 60초
+ *   <li>{@code reused:auth:resend-email:{이메일 해시}}, {@code reused:auth:resend-gap-email:{이메일 해시}} —
+ *       가입되지 않은 주소로 온 재설정 요청의 발송 제한. 위 두 키와 같은 규칙이다({@link #recordSendForUnknownEmail})
  * </ul>
  *
  * <p>시도 카운터 TTL을 코드와 같게 두면 코드가 만료될 때 카운터도 사라져 "코드 하나당 N회"가 성립한다.
@@ -110,9 +112,22 @@ public class AuthCodeStore {
 	 * @throws BusinessException RATE_LIMITED 간격 또는 시간당 횟수 초과
 	 */
 	public void recordSend(Long identityId) {
-		String gapKey = KEY_PREFIX + "resend-gap:" + identityId;
-		String countKey = KEY_PREFIX + "resend:" + identityId;
+		recordSend(KEY_PREFIX + "resend-gap:" + identityId, KEY_PREFIX + "resend:" + identityId);
+	}
 
+	/**
+	 * 가입되지 않은 주소로 온 재설정 요청도 {@link #recordSend}와 같은 규칙으로 센다. 메일은 보내지 않는다.
+	 * 계정이 있을 때만 429가 나면 연달아 요청해 보는 것만으로 가입 여부가 드러난다(NFR-AUTH-018).
+	 *
+	 * @param normalizedEmail 정규화한 이메일
+	 * @throws BusinessException RATE_LIMITED 간격 또는 시간당 횟수 초과
+	 */
+	public void recordSendForUnknownEmail(String normalizedEmail) {
+		String email = EmailKey.of(normalizedEmail);
+		recordSend(KEY_PREFIX + "resend-gap-email:" + email, KEY_PREFIX + "resend-email:" + email);
+	}
+
+	private void recordSend(String gapKey, String countKey) {
 		if (Boolean.TRUE.equals(redis.hasKey(gapKey))) {
 			throw new BusinessException(ErrorCode.RATE_LIMITED,
 					"인증 메일은 " + properties.resendGap().toSeconds() + "초 후에 다시 요청할 수 있습니다.");

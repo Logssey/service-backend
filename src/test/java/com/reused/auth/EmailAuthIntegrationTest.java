@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willAnswer;
+import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -46,6 +47,7 @@ import com.reused.auth.client.OAuthProviderClient;
 import com.reused.auth.dto.request.EmailLoginRequest;
 import com.reused.auth.mail.AuthMailSender;
 import com.reused.auth.service.EmailAuthService;
+import com.reused.common.error.BusinessException;
 import com.reused.common.error.ErrorCode;
 import com.reused.support.ConcurrentAttempts;
 import com.reused.user.entity.AuthProvider;
@@ -212,6 +214,29 @@ class EmailAuthIntegrationTest {
 		mockMvc.perform(login(EMAIL, PASSWORD))
 				.andExpect(status().isTooManyRequests())
 				.andExpect(jsonPath("$.code").value("RATE_LIMITED"));
+	}
+
+	@Test
+	@DisplayName("가입되지 않은 이메일도 5회 실패하면 429이고, 가입된 계정의 429와 응답이 같다(NFR-AUTH-018)")
+	void unknownEmailIsRateLimitedLikeExistingAccount() throws Exception {
+		signupUser();
+		for (int i = 0; i < 5; i++) {
+			mockMvc.perform(login(EMAIL, "wrong-password!")).andExpect(status().isUnauthorized());
+			mockMvc.perform(login("Nobody@Example.com", "wrong-password!")).andExpect(status().isUnauthorized());
+		}
+
+		String existing = mockMvc.perform(login(EMAIL, "wrong-password!"))
+				.andExpect(status().isTooManyRequests())
+				.andReturn().getResponse().getContentAsString();
+		// 대소문자만 바꿔 한도를 우회하지 못한다
+		String unknown = mockMvc.perform(login("nobody@example.com", "wrong-password!"))
+				.andExpect(status().isTooManyRequests())
+				.andExpect(jsonPath("$.code").value("RATE_LIMITED"))
+				.andReturn().getResponse().getContentAsString();
+
+		assertThat(unknown).isEqualTo(existing);
+		assertThat(redisTemplate.keys("reused:auth:login-fail-email:*"))
+				.singleElement().asString().doesNotContain("nobody");
 	}
 
 	@Test
@@ -442,6 +467,39 @@ class EmailAuthIntegrationTest {
 				.andExpect(status().isNoContent());
 
 		verify(mailSender, never()).sendPasswordResetCode(any(), any());
+	}
+
+	@Test
+	@DisplayName("재설정 요청을 간격 안에 다시 보내면 가입 여부와 무관하게 같은 429다(NFR-AUTH-018)")
+	void passwordResetRateLimitDoesNotRevealAccount() throws Exception {
+		signupUser();
+		clearResendGap();
+
+		for (String email : List.of(EMAIL, "nobody@example.com")) {
+			mockMvc.perform(json(post("/api/v1/auth/password/reset"), Map.of("email", email)))
+					.andExpect(status().isNoContent());
+		}
+		String existing = mockMvc.perform(json(post("/api/v1/auth/password/reset"), Map.of("email", EMAIL)))
+				.andExpect(status().isTooManyRequests())
+				.andReturn().getResponse().getContentAsString();
+		String unknown = mockMvc.perform(json(post("/api/v1/auth/password/reset"), Map.of("email", "nobody@example.com")))
+				.andExpect(status().isTooManyRequests())
+				.andReturn().getResponse().getContentAsString();
+
+		assertThat(unknown).isEqualTo(existing);
+		verify(mailSender, times(1)).sendPasswordResetCode(any(), any());
+	}
+
+	@Test
+	@DisplayName("재설정 메일 발송이 실패해도 가입되지 않은 주소와 같은 204다(NFR-AUTH-018)")
+	void passwordResetMailFailureLooksLikeUnknownEmail() throws Exception {
+		signupUser();
+		clearResendGap();
+		willThrow(new BusinessException(ErrorCode.EXTERNAL_SERVICE_ERROR))
+				.given(mailSender).sendPasswordResetCode(any(), any());
+
+		mockMvc.perform(json(post("/api/v1/auth/password/reset"), Map.of("email", EMAIL)))
+				.andExpect(status().isNoContent());
 	}
 
 	@Test
