@@ -6,6 +6,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -34,7 +35,9 @@ import tools.jackson.databind.ObjectMapper;
 import com.reused.TestcontainersConfiguration;
 import com.reused.auth.client.OAuthProviderClient;
 import com.reused.auth.mail.AuthMailSender;
+import com.reused.auth.token.JwtTokenProvider;
 import com.reused.chatbot.llm.LlmClient;
+import com.reused.user.entity.UserRole;
 
 /**
  * 챗봇 비활성화 스위치(ADR-003, FR-AI-008). 꺼져 있으면 두 엔드포인트 모두 503이다.
@@ -60,6 +63,9 @@ class ChatbotDisabledIntegrationTest {
 	private JdbcTemplate jdbcTemplate;
 
 	@Autowired
+	private JwtTokenProvider tokenProvider;
+
+	@Autowired
 	private StringRedisTemplate redisTemplate;
 
 	@MockitoBean
@@ -77,6 +83,7 @@ class ChatbotDisabledIntegrationTest {
 		given(llmClient.isConfigured()).willReturn(true);
 		jdbcTemplate.execute("TRUNCATE audit_logs, notification_settings, user_status_histories, user_identities, users "
 				+ "RESTART IDENTITY CASCADE");
+		jdbcTemplate.update("UPDATE service_feature_flags SET enabled = true WHERE feature_key = 'CHATBOT'");
 		redisTemplate.execute((RedisCallback<Void>) connection -> {
 			connection.serverCommands().flushDb();
 			return null;
@@ -139,6 +146,24 @@ class ChatbotDisabledIntegrationTest {
 		mockMvc.perform(send(token, Map.of("questionId", 1)))
 				.andExpect(status().isUnauthorized())
 				.andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+	}
+
+	@Test
+	void administratorCannotOverrideEnvironmentKillSwitch() throws Exception {
+		Long adminId = jdbcTemplate.queryForObject(
+				"INSERT INTO users (nickname, role, terms_agreed_at) VALUES ('관리자', 'ADMIN', now()) RETURNING user_id",
+				Long.class);
+		String bearer = "Bearer " + tokenProvider.issueAccessToken(adminId, UserRole.ADMIN);
+		mockMvc.perform(get("/api/v1/admin/chatbot").header("Authorization", bearer))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.enabled").value(false))
+				.andExpect(jsonPath("$.adminEnabled").value(true))
+				.andExpect(jsonPath("$.environmentEnabled").value(false));
+		mockMvc.perform(patch("/api/v1/admin/chatbot").header("Authorization", bearer)
+				.contentType(MediaType.APPLICATION_JSON).content("{\"enabled\":true}"))
+				.andExpect(status().isConflict());
+		assertThat(jdbcTemplate.queryForObject(
+				"SELECT count(*) FROM audit_logs WHERE action = 'CHATBOT_STATUS_UPDATE'", Long.class)).isZero();
 	}
 
 	private MockHttpServletRequestBuilder send(String accessToken, Map<String, ?> body) {

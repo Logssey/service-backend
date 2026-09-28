@@ -511,12 +511,14 @@ class ListingIntegrationTest {
 	}
 
 	@Test
-	@DisplayName("목록 검색은 키워드·카테고리·상태·가격 조건을 함께 적용한다")
+	@DisplayName("목록 검색은 키워드·카테고리·판매 상태·상품 상태·가격 조건을 함께 적용한다")
 	void listAppliesFilters() throws Exception {
 		Long sellerId = insertUser("판매자", UserRole.USER);
 		Long devices = categoryId("디지털기기");
 		Long books = categoryId("도서");
 		Long expected = insertListing(sellerId, devices, "아이패드 프로", 650000, "ON_SALE", BASE_TIME);
+		Long otherCondition = insertListing(sellerId, devices, "아이패드 에어", 600000, "ON_SALE", BASE_TIME.plusSeconds(4));
+		jdbcTemplate.update("UPDATE listings SET item_condition = 'USED' WHERE listing_id = ?", otherCondition);
 		insertListing(sellerId, devices, "아이패드 미니", 300000, "RESERVED", BASE_TIME.plusSeconds(1));
 		insertListing(sellerId, books, "아이패드 사용 설명서", 5000, "ON_SALE", BASE_TIME.plusSeconds(2));
 		insertListing(sellerId, devices, "갤럭시 탭", 700000, "ON_SALE", BASE_TIME.plusSeconds(3));
@@ -525,6 +527,7 @@ class ListingIntegrationTest {
 					.param("keyword", "아이패드")
 					.param("categoryId", devices.toString())
 					.param("status", "ON_SALE")
+					.param("itemCondition", "LIKE_NEW")
 					.param("minPrice", "500000")
 					.param("maxPrice", "700000"))
 				.andExpect(status().isOk())
@@ -563,6 +566,9 @@ class ListingIntegrationTest {
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
 		mockMvc.perform(get(LISTINGS).param("sort", "unknown"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
+		mockMvc.perform(get(LISTINGS).param("itemCondition", "unknown"))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
 		mockMvc.perform(get(LISTINGS).param("minPrice", "not-a-number"))

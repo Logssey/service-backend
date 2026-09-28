@@ -78,15 +78,18 @@ public class ChatbotService {
 	private final LlmClient llmClient;
 	private final AuditLogger auditLogger;
 	private final ChatbotProperties properties;
+	private final ChatbotFeatureService featureService;
 
 	public ChatbotService(ActiveUserGuard activeUserGuard, ChatbotRateLimiter rateLimiter, ChatbotExecutor executor,
-			LlmClient llmClient, AuditLogger auditLogger, ChatbotProperties properties) {
+			LlmClient llmClient, AuditLogger auditLogger, ChatbotProperties properties,
+			ChatbotFeatureService featureService) {
 		this.activeUserGuard = activeUserGuard;
 		this.rateLimiter = rateLimiter;
 		this.executor = executor;
 		this.llmClient = llmClient;
 		this.auditLogger = auditLogger;
 		this.properties = properties;
+		this.featureService = featureService;
 	}
 
 	/**
@@ -135,7 +138,7 @@ public class ChatbotService {
 	}
 
 	private void requireEnabled() {
-		if (!properties.enabled()) {
+		if (!featureService.isEnabled()) {
 			throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, DISABLED_MESSAGE);
 		}
 	}

@@ -35,16 +35,18 @@ docker run -d --name reused-mailpit -p 1025:1025 -p 8025:8025 axllent/mailpit
 
 Mailpit 웹 UI는 `http://localhost:8025`. 이메일 인증·비밀번호 재설정 코드는 메일 본문에만 존재하므로 여기서 확인한다.
 
+Windows의 일부 Docker Desktop 환경에서는 컨테이너 안의 SMTP가 정상이더라도 게시된 `localhost:1025` 포트가 TCP 연결만 수락하고 SMTP `220` 인사말을 전달하지 못한다. 이 경우 `/actuator/health`의 `mail` 항목이 `DOWN`이 되고 인증 메일도 보낼 수 없다. 기존 컨테이너를 바꾸지 않고 호스트에서 별도 Mailpit을 실행하려면 PowerShell에서 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-local-mailpit.ps1`을 실행한다. 스크립트는 공식 Windows 릴리스 v1.31.3의 SHA-256을 검증한 후 `127.0.0.1:1026`(SMTP), `127.0.0.1:8026`(UI)에만 바인딩한다. 백엔드를 시작하기 전에 `MAIL_HOST=127.0.0.1`, `MAIL_PORT=1026`으로 설정한다. 이 대역도 SMTP 연결이 실패하면 원인을 조사해야 하며 메일 health 항목을 숨겨서 성공처럼 표시하지 않는다.
+
 ### 2. DB 스키마와 마이그레이션
 
-**새 빈 DB**에서 애플리케이션을 시작하면 Flyway가 `V1` 초기 스키마, `V2` 카테고리 기준 데이터, `V3` 프로필 이미지, `V4` 소셜 계정 선택 이메일 변경을 순서대로 적용한다. Hibernate는 테이블을 만들지 않는다(`ddl-auto=none`). `schema/001_init.sql`·`002_seed_categories.sql`·`003_profile_images.sql`·`004_social_identity_email.sql`이 저장소의 유일한 SQL 원본이고, Gradle `processResources`가 이 파일들을 `db/migration/V1__init.sql` 등의 이름으로 JAR에 패키징한다. SQL 사본을 따로 수정하지 않는다. 새 변경은 `schema/`에 다음 번호 파일을 추가하고 `build.gradle`의 패키징 매핑에 등록한다.
+**새 빈 DB**에서 애플리케이션을 시작하면 Flyway가 `V1` 초기 스키마, `V2` 카테고리 기준 데이터, `V3` 프로필 이미지, `V4` 소셜 계정 선택 이메일, `V5` 관리자 챗봇 스위치를 순서대로 적용한다. Hibernate는 테이블을 만들지 않는다(`ddl-auto=none`). `schema/001_init.sql`부터 `005_chatbot_feature_flag.sql`까지가 저장소의 유일한 SQL 원본이고, Gradle `processResources`가 이 파일들을 `db/migration/V1__init.sql` 등의 이름으로 JAR에 패키징한다. SQL 사본을 따로 수정하지 않는다. 새 변경은 `schema/`에 다음 번호 파일을 추가하고 `build.gradle`의 패키징 매핑에 등록한다.
 
 **기존 데이터가 있는 DB**에는 자동 기준선 설정을 사용하지 않는다(`spring.flyway.baseline-on-migrate=false`). `flyway_schema_history`가 없는 비어 있지 않은 DB로 새 버전을 기동하면 안전하게 실패한다. 기존 `reused`·`reused_web_20260926` 및 운영 DB에는 이 문서의 절차를 검토 없이 실행하지 않는다.
 
 기존 DB를 도입할 때는 담당자가 다음을 수동으로 수행한다.
 
-1. 대상 DB의 서버·DB명·스키마를 읽기 전용으로 확인하고 백업과 복구 가능성을 확인한다. 실제 스키마를 `schema/` SQL과 비교한다. `V2` 여부는 카테고리 기준 데이터, `V3` 여부는 `listing_images.purpose`·`profile_user_id`, `V4` 여부는 `user_identities.email_consent_at` 컬럼과 새 제약·부분 UNIQUE 인덱스로 판단한다. 일부만 적용되었거나 문서와 다른 DB라면 중단하고 별도 수정 계획을 세운다.
-2. 정확히 `V1`까지만 적용된 DB는 baseline version `1`, `V2`까지는 `2`, `V3`까지는 `3`, `V4`까지는 `4`로 정한다. Flyway CLI의 연결 정보(`FLYWAY_URL`, `FLYWAY_USER`, `FLYWAY_PASSWORD`)는 검증된 대상과 비밀값 저장소에서 주입하고, 예를 들어 `V4`까지 동일한 DB에만 `flyway -baselineVersion=4 baseline`을 한 번 실행한다. `baseline`은 기존 SQL을 검증·재실행하지 않고 해당 버전까지 적용된 것으로 기록한다.
+1. 대상 DB의 서버·DB명·스키마를 읽기 전용으로 확인하고 백업과 복구 가능성을 확인한다. 실제 스키마를 `schema/` SQL과 비교한다. `V2` 여부는 카테고리 기준 데이터, `V3` 여부는 `listing_images.purpose`·`profile_user_id`, `V4` 여부는 `user_identities.email_consent_at` 컬럼과 새 제약·부분 UNIQUE 인덱스, `V5` 여부는 `service_feature_flags`의 `CHATBOT` 행으로 판단한다. 일부만 적용되었거나 문서와 다른 DB라면 중단하고 별도 수정 계획을 세운다.
+2. 정확히 `V1`까지만 적용된 DB는 baseline version `1`, `V2`까지는 `2`, `V3`까지는 `3`, `V4`까지는 `4`, `V5`까지는 `5`로 정한다. Flyway CLI의 연결 정보(`FLYWAY_URL`, `FLYWAY_USER`, `FLYWAY_PASSWORD`)는 검증된 대상과 비밀값 저장소에서 주입하고, 예를 들어 `V4`까지 동일한 DB에만 `flyway -baselineVersion=4 baseline`을 한 번 실행한다. `baseline`은 기존 SQL을 검증·재실행하지 않고 해당 버전까지 적용된 것으로 기록한다.
 3. `V4`를 아직 적용하지 않은 DB는 적용 전에 `SELECT count(*) FROM user_identities WHERE email IS NULL AND email_verified_at IS NOT NULL` 결과가 0인지 확인한다. `V3` 기준선에서 다음 기동 시 Flyway가 `V4`를 적용하지만, 운영 배포에서는 기존 버전과 호환되는 `V4`를 새 애플리케이션보다 먼저 적용하도록 계획한다. `email_consent_at`이 없으면 새 인증 코드가 실패한다.
 4. `flyway info`에서 기준선과 대상 DB를 다시 확인한 다음 애플리케이션을 기동한다. 기준선보다 뒤의 마이그레이션만 적용된다. 배포 전에 같은 상태를 복제한 일회용 DB에서 절차를 연습한다. CI/CD에는 기존 DB를 자동 baseline하는 작업을 넣지 않는다.
 
@@ -67,14 +69,14 @@ Mailpit 웹 UI는 `http://localhost:8025`. 이메일 인증·비밀번호 재설
 | `MAIL_HOST` / `MAIL_PORT` / `MAIL_FROM` | | SMTP 대역. 기본 `localhost` / `1025` / `no-reply@reused.local` |
 | `IMAGE_S3_BUCKET` | 이미지 사용 시 O | 비공개 이미지 버킷. 비어 있으면 서버는 기동하지만 이미지 API는 503을 반환 |
 | `IMAGE_S3_REGION` | | 이미지 버킷 리전. 기본 `ap-northeast-1`(도쿄, 서비스 리전) |
-| `IMAGE_S3_ENDPOINT` | | LocalStack·MinIO용 endpoint override. AWS에서는 비워 둔다 |
+| `IMAGE_S3_ENDPOINT` | | Moto·MinIO 등 로컬 S3 대역용 endpoint override. AWS에서는 비워 둔다 |
 | `IMAGE_ORPHAN_RETENTION` | | 게시글에 연결되지 않은 이미지 보존 기간. 기본 `24h` |
 | `IMAGE_CLEANUP_INTERVAL` | | 고아 이미지 정리 주기. 기본 `1h` |
 | `IMAGE_UNATTACHED_LIMIT` | | 사용자별 미연결 이미지 상한. 기본 `20` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | 로컬 S3 사용 시 | AWS SDK 기본 자격증명 체인을 사용한다. 운영에서는 정적 키 대신 workload role을 사용한다 |
 | `ANTHROPIC_API_KEY` | | 자유 입력용 LLM 키. 키가 있어도 자유 입력은 기본 차단된다 |
 | `ANTHROPIC_BASE_URL` | | LLM API 주소. 게이트웨이를 거칠 때만 둔다. 기본은 SDK 기본 주소 |
-| `CHATBOT_ENABLED` | | `false`면 챗봇 두 엔드포인트가 모두 503이다(ADR-003 비활성화 스위치). 기본 `true` |
+| `CHATBOT_ENABLED` | | 환경 강제 차단 스위치. `false`면 관리자 DB 스위치를 켜도 두 엔드포인트가 503이다. 기본 `true` |
 | `CHATBOT_FREE_INPUT_ENABLED` | | 기본 `false`. 추천 질문은 유지하고 자유 입력만 503으로 차단한다. 개인정보 외부 전송 정책 검토 전에는 활성화하지 않는다 |
 
 ```bash
@@ -88,6 +90,10 @@ export APP_AUTH_COOKIE_SECURE="false"
 ```
 
 서버는 `http://localhost:8080`에서 뜬다. 프론트엔드 개발 서버(`service-frontend`, 5173)가 `/api` 요청을 이 주소로 프록시한다.
+
+관리자는 `GET/PATCH /api/v1/admin/chatbot`으로 DB에 저장되는 챗봇 전체 스위치를 조회·변경할 수 있다. 변경은 모든 API 인스턴스에 재기동 없이 적용되고 감사 로그에 남는다. 이 API는 자유 입력 스위치를 변경하지 않으며, `CHATBOT_FREE_INPUT_ENABLED=false`면 추천 질문만 이용할 수 있다.
+
+`GET /api/v1/admin/credentials/status`는 현재 관리자에게만 JWT·DB·Redis·SMTP·카카오·이미지 저장소·LLM의 설정 존재 여부와 사용 여부를 반환한다. `configured`는 연결 성공이나 인증 성공을 의미하지 않는다. 카카오 대역(`app.kakao.stub=true`)은 실제 OAuth가 비활성화된 것으로 표시한다. `source=APPLICATION_CONFIGURATION`은 설정 채널을 뜻하며 실제 환경변수·시크릿 저장소의 출처를 판별하지 않는다. 비밀값·부분값·식별 해시·환경변수 이름·호스트/사용자명은 반환하지 않고 응답 캐시도 금지한다. 조회 시 관리자의 ID와 `CREDENTIAL_STATUS_VIEW` 동작만 감사 기록한다. 비밀값 교체는 환경 설정을 변경하고 서비스를 재배포한 뒤 실제 외부 연동을 확인해야 한다.
 
 **카카오 대역.** `local` 프로파일에서는 `KakaoStubClient`가 카카오를 호출하지 않고 인가 코드를 그대로 회원번호로 쓴다. 프론트 `.env`에 `VITE_KAKAO_STUB=true`를 두면 브라우저마다 고정된 코드를 보내므로 같은 계정으로 계속 로그인된다. 대역은 `local` 프로파일과 `app.kakao.stub=true`가 모두 있어야 뜨고, 이때 실제 클라이언트는 꺼진다. 프로파일 없이 stub만 켜면 카카오 로그인은 404로 막힌다.
 
@@ -135,7 +141,7 @@ PR에는 `Marketplace tests` 워크플로가 동일한 회귀 검증을 수행�
 - Spring API는 `/api`, 별도 채팅 런타임은 `/socket.io`로 라우팅한다. WebSocket 업그레이드와 채팅 Origin 허용 목록을 설정한다.
 - 채팅의 `CHAT_API_BASE_URL`은 Spring 주소, `CHAT_REDIS_URL`은 API와 같은 Redis, `CHAT_ALLOWED_ORIGINS`는 실제 프론트 Origin이다. JWT 비밀키를 채팅 서버에 복제하지 않는다.
 - Spring의 `/actuator/health/liveness`, `/actuator/health/readiness`는 인증 없는 컨테이너 프로브용이다. 다른 관리 엔드포인트를 공개하지 않는다.
-- 기능 구현·로컬/CI 검증과 운영 배포는 구분한다. 실제 S3·SMTP·카카오 자격증명, 003·004 DB 적용, Socket.IO 라우팅은 운영 담당자가 해당 환경에 반영해야 한다.
+- 기능 구현·로컬/CI 검증과 운영 배포는 구분한다. 실제 S3·SMTP·카카오 자격증명, 기존 DB의 003~005 마이그레이션 적용, Socket.IO 라우팅은 운영 담당자가 해당 환경에 반영해야 한다.
 - 구현 상태의 원본은 [설계 저장소 현황](https://github.com/Logssey/service-design-docs/blob/main/05-api/backend-implementation-status.md)이다.
 
 ## 프로젝트 구조
