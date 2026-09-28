@@ -537,9 +537,32 @@ class ListingIntegrationTest {
 	}
 
 	@Test
-	@DisplayName("목록의 최대 크기·정렬값·숫자 파라미터 오류는 모두 400이다")
+	@DisplayName("목록 검색은 상품 상태로 좁힐 수 있다(HOME-002 필터)")
+	void listFiltersByItemCondition() throws Exception {
+		Long sellerId = insertUser("판매자", UserRole.USER);
+		Long devices = categoryId("디지털기기");
+		Long likeNew = insertListing(sellerId, devices, "거의 새것", 100, "ON_SALE", BASE_TIME);
+		Long used = insertListing(sellerId, devices, "사용감 있음", 100, "ON_SALE", BASE_TIME.plusSeconds(1));
+		jdbcTemplate.update("UPDATE listings SET item_condition = 'USED' WHERE listing_id = ?", used);
+
+		mockMvc.perform(get(LISTINGS).param("itemCondition", "USED"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.items.length()").value(1))
+				.andExpect(jsonPath("$.items[0].listingId").value(used))
+				.andExpect(jsonPath("$.items[0].itemCondition").value("USED"));
+		mockMvc.perform(get(LISTINGS).param("itemCondition", "LIKE_NEW"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.items.length()").value(1))
+				.andExpect(jsonPath("$.items[0].listingId").value(likeNew));
+	}
+
+	@Test
+	@DisplayName("목록의 최대 크기·정렬값·숫자·상품 상태 파라미터 오류는 모두 400이다")
 	void listRejectsInvalidQueryParameters() throws Exception {
 		mockMvc.perform(get(LISTINGS).param("size", "101"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
+		mockMvc.perform(get(LISTINGS).param("itemCondition", "BROKEN"))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.code").value("INVALID_INPUT"));
 		mockMvc.perform(get(LISTINGS).param("sort", "unknown"))

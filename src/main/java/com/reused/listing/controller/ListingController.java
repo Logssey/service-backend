@@ -81,8 +81,8 @@ public class ListingController {
 			@RequestParam(required = false) String cursor,
 			@RequestParam(required = false) Integer size) {
 		Long viewerId = currentUserProvider.current().map(AuthPrincipal::userId).orElse(null);
-		return listingQueryService.getListings(new ListingSearchRequest(keyword, categoryId, status, itemCondition,
-				minPrice, maxPrice, sort, cursor, size), viewerId);
+		return listingQueryService.getListings(new ListingSearchRequest(keyword, categoryId, status,
+				itemCondition, minPrice, maxPrice, sort, cursor, size), viewerId);
 	}
 
 	@GetMapping("/{listingId}")

@@ -117,8 +117,8 @@ public class ListingQueryService {
 		if (size < 1 || size > MAX_SIZE) {
 			throw new BusinessException(ErrorCode.INVALID_INPUT);
 		}
-		return new ListingSearchRequest(keyword, request.categoryId(), request.status(), request.itemCondition(),
-				request.minPrice(), request.maxPrice(), sort, request.cursor(), size);
+		return new ListingSearchRequest(keyword, request.categoryId(), request.status(),
+				request.itemCondition(), request.minPrice(), request.maxPrice(), sort, request.cursor(), size);
 	}
 
 	private static void validatePrice(Integer price) {
