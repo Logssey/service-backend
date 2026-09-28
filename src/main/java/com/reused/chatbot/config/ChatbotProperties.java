@@ -9,7 +9,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * 챗봇 설정(ADR-003). 호출 제한 기본값은 business-rules 4장 "챗봇 호출 제한 사용자당 분당 5회"와
  * redis-keys.md의 TTL 1분이다. 타임아웃·풀 크기는 문서에 수치가 없어 0단계 계약이 정했다.
  *
- * @param enabled 기능 비활성화 스위치(ADR-003). false면 두 엔드포인트 모두 503이다. 바꾸려면 재기동한다
+ * @param enabled 환경 강제 비활성화 스위치(ADR-003). false면 관리자 DB 스위치와 관계없이 두 엔드포인트가 503이다
  * @param rateLimit 창 하나에서 허용하는 호출 수. 넘으면 429
  * @param rateWindow 호출 제한 창(고정 창)
  */

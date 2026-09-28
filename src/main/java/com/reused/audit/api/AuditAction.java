@@ -29,6 +29,10 @@ public enum AuditAction {
 	NOTICE_UPDATE,
 	NOTICE_DELETE,
 
+	// 관리자 기능 스위치
+	CHATBOT_STATUS_UPDATE,
+	CREDENTIAL_STATUS_VIEW,
+
 	// 게시글 작성자 행위 — A (FR-LOG-002). LISTING_DELETE는 upstream 관리자 삭제(AdminService)도 쓴다
 	LISTING_CREATE,
 	LISTING_UPDATE,
