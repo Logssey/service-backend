@@ -5,6 +5,7 @@ public record ListingSearchRequest(
 		String keyword,
 		Long categoryId,
 		String status,
+		String itemCondition,
 		Integer minPrice,
 		Integer maxPrice,
 		String sort,

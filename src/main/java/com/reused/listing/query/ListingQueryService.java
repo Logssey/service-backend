@@ -20,6 +20,7 @@ public class ListingQueryService {
 	private static final int MAX_SIZE = 100;
 	private static final int MAX_PRICE = 100_000_000;
 	private static final Set<String> PUBLIC_STATUSES = Set.of("ON_SALE", "RESERVED", "COMPLETED");
+	private static final Set<String> ITEM_CONDITIONS = Set.of("NEW", "LIKE_NEW", "USED", "DAMAGED");
 	private static final Set<String> SORTS = Set.of("latest", "priceAsc", "priceDesc");
 
 	private final ListingQueryRepository repository;
@@ -79,7 +80,7 @@ public class ListingQueryService {
 
 	private static ListingSearchRequest validateAndNormalize(ListingSearchRequest request) {
 		if (request == null) {
-			request = new ListingSearchRequest(null, null, null, null, null, null, null, null);
+			request = new ListingSearchRequest(null, null, null, null, null, null, null, null, null);
 		}
 
 		String keyword = request.keyword();
@@ -98,6 +99,9 @@ public class ListingQueryService {
 		if (request.status() != null && !PUBLIC_STATUSES.contains(request.status())) {
 			throw new BusinessException(ErrorCode.INVALID_INPUT);
 		}
+		if (request.itemCondition() != null && !ITEM_CONDITIONS.contains(request.itemCondition())) {
+			throw new BusinessException(ErrorCode.INVALID_INPUT);
+		}
 		validatePrice(request.minPrice());
 		validatePrice(request.maxPrice());
 		if (request.minPrice() != null && request.maxPrice() != null
@@ -113,7 +117,7 @@ public class ListingQueryService {
 		if (size < 1 || size > MAX_SIZE) {
 			throw new BusinessException(ErrorCode.INVALID_INPUT);
 		}
-		return new ListingSearchRequest(keyword, request.categoryId(), request.status(),
+		return new ListingSearchRequest(keyword, request.categoryId(), request.status(), request.itemCondition(),
 				request.minPrice(), request.maxPrice(), sort, request.cursor(), size);
 	}
 
