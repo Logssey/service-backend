@@ -93,6 +93,10 @@ class ListingQueryRepository {
 			sql.append(" AND l.status = :status");
 			params.addValue("status", search.status());
 		}
+		if (search.itemCondition() != null) {
+			sql.append(" AND l.item_condition = :itemCondition");
+			params.addValue("itemCondition", search.itemCondition());
+		}
 		if (search.minPrice() != null) {
 			sql.append(" AND l.price >= :minPrice");
 			params.addValue("minPrice", search.minPrice());
