@@ -68,7 +68,7 @@ Windows의 일부 Docker Desktop 환경에서는 컨테이너 안의 SMTP가 정
 | `APP_AUTH_COOKIE_SECURE` | | http로 접속하는 로컬 개발에서는 `false`. 기본 `true` |
 | `MAIL_HOST` / `MAIL_PORT` / `MAIL_FROM` | | SMTP 대역. 기본 `localhost` / `1025` / `no-reply@reused.local` |
 | `IMAGE_S3_BUCKET` | 이미지 사용 시 O | 비공개 이미지 버킷. 비어 있으면 서버는 기동하지만 이미지 API는 503을 반환 |
-| `IMAGE_S3_REGION` | | 이미지 버킷 리전. 기본 `ap-northeast-2` |
+| `IMAGE_S3_REGION` | | 이미지 버킷 리전. 기본 `ap-northeast-1`(도쿄, 서비스 리전) |
 | `IMAGE_S3_ENDPOINT` | | Moto·MinIO 등 로컬 S3 대역용 endpoint override. AWS에서는 비워 둔다 |
 | `IMAGE_ORPHAN_RETENTION` | | 게시글에 연결되지 않은 이미지 보존 기간. 기본 `24h` |
 | `IMAGE_CLEANUP_INTERVAL` | | 고아 이미지 정리 주기. 기본 `1h` |

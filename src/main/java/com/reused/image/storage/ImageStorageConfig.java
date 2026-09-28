@@ -19,7 +19,7 @@ public class ImageStorageConfig {
 
 	@Bean
 	ImageStorage imageStorage(@Value("${app.image.s3.bucket:}") String bucket,
-			@Value("${app.image.s3.region:ap-northeast-2}") String region,
+			@Value("${app.image.s3.region:ap-northeast-1}") String region,
 			@Value("${app.image.s3.endpoint:}") String endpoint) {
 		if (bucket.isBlank()) {
 			return new UnavailableImageStorage();
