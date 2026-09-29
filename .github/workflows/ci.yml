@@ -14,9 +14,7 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: logssey/reused-api
   GITOPS_REPO: Logssey/gitops
-  GITOPS_VALUES_PATH: apps/reused-api/values.yaml
 
 # 같은 PR 에 연속으로 push 하면 이전 실행을 취소한다.
 concurrency:
@@ -24,11 +22,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 한 레포에 API 와 채팅 서버가 있다.
+  # 바뀐 쪽만 빌드해 ECR 수명주기 한도를 아끼고 시간을 줄인다.
+  # 워크플로 자체가 바뀌면 둘 다 검증한다.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      chat: ${{ steps.filter.outputs.chat }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'src/**'
+              - 'build.gradle'
+              - 'settings.gradle'
+              - 'gradle/**'
+              - 'gradlew'
+              - 'gradlew.bat'
+              - 'Dockerfile'
+              - '.dockerignore'
+              - 'schema/**'
+              - '.github/workflows/**'
+            chat:
+              - 'chat-server/**'
+              - '.github/workflows/**'
+
   # PR 이 열리거나 커밋이 추가되면 빌드해 ECR 에 올린다.
   # 태그는 pr-{SHA} 이며 머지 시 리태깅된다.
-  build:
-    if: github.event.action == 'opened' || github.event.action == 'synchronize'
+  build-api:
+    needs: changes
+    if: |
+      needs.changes.outputs.api == 'true' &&
+      (github.event.action == 'opened' || github.event.action == 'synchronize')
     runs-on: ubuntu-latest
+    env:
+      ECR_REPOSITORY: logssey/reused-api
     steps:
       - uses: actions/checkout@v7
 
@@ -46,7 +79,7 @@ jobs:
       # 로컬에서 ./gradlew test 로 검증한 뒤 PR 을 올린다.
       - name: Build
         run: ./gradlew build -x test
-      
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -70,9 +103,47 @@ jobs:
             .
           docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
+  # 채팅 서버는 Dockerfile 이 멀티스테이지라
+  # 컨테이너 안에서 npm ci 와 tsc 를 수행한다.
+  # 러너에 Node 를 설치할 필요가 없다.
+  build-chat:
+    needs: changes
+    if: |
+      needs.changes.outputs.chat == 'true' &&
+      (github.event.action == 'opened' || github.event.action == 'synchronize')
+    runs-on: ubuntu-latest
+    env:
+      ECR_REPOSITORY: logssey/reused-chat
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_TAG: pr-${{ github.event.pull_request.head.sha }}
+        run: |
+          docker build \
+            --label "org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+            ./chat-server
+          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
   # 머지되면 pr-{SHA} 를 {SHA} 로 리태깅한다.
   # 재빌드하지 않고 매니페스트만 복사하므로 같은 이미지가 보장된다.
   retag:
+    needs: changes
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     outputs:
@@ -84,35 +155,43 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Retag image
+      - name: Retag images
         id: retag
         env:
           SOURCE_TAG: pr-${{ github.event.pull_request.head.sha }}
           TARGET_TAG: ${{ github.event.pull_request.head.sha }}
+          API_CHANGED: ${{ needs.changes.outputs.api }}
+          CHAT_CHANGED: ${{ needs.changes.outputs.chat }}
         run: |
-          MANIFEST=$(aws ecr batch-get-image \
-            --repository-name "$ECR_REPOSITORY" \
-            --image-ids imageTag="$SOURCE_TAG" \
-            --query 'images[].imageManifest' \
-            --output text)
+          retag() {
+            REPO="$1"
+            MANIFEST=$(aws ecr batch-get-image \
+              --repository-name "$REPO" \
+              --image-ids imageTag="$SOURCE_TAG" \
+              --query 'images[].imageManifest' \
+              --output text)
 
-          if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
-            echo "소스 이미지($SOURCE_TAG)를 찾을 수 없다."
-            exit 1
-          fi
+            if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
+              echo "소스 이미지($REPO:$SOURCE_TAG)를 찾을 수 없다."
+              exit 1
+            fi
 
-          aws ecr put-image \
-            --repository-name "$ECR_REPOSITORY" \
-            --image-tag "$TARGET_TAG" \
-            --image-manifest "$MANIFEST" \
-            || echo "이미 같은 다이제스트에 태그가 있다. 건너뛴다."
+            aws ecr put-image \
+              --repository-name "$REPO" \
+              --image-tag "$TARGET_TAG" \
+              --image-manifest "$MANIFEST" \
+              || echo "이미 같은 다이제스트에 태그가 있다. 건너뛴다."
+          }
+
+          if [ "$API_CHANGED" = "true" ]; then retag "logssey/reused-api"; fi
+          if [ "$CHAT_CHANGED" = "true" ]; then retag "logssey/reused-chat"; fi
 
           echo "IMAGE_TAG=$TARGET_TAG" >> "$GITHUB_OUTPUT"
 
   # gitops 레포의 이미지 태그를 갱신한다.
   # Argo CD 가 변경을 감지해 배포한다.
   deploy:
-    needs: retag
+    needs: [changes, retag]
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     # 승인 게이트. Settings → Environments 에서 reviewer 를 설정한다.
@@ -136,16 +215,23 @@ jobs:
           token: ${{ steps.token.outputs.token }}
           ref: main
 
-      - name: Update image tag
+      - name: Update image tags
         env:
           IMAGE_TAG: ${{ needs.retag.outputs.image_tag }}
+          API_CHANGED: ${{ needs.changes.outputs.api }}
+          CHAT_CHANGED: ${{ needs.changes.outputs.chat }}
         run: |
           # yq 는 파일을 다시 쓰면서 빈 줄을 제거해 불필요한 diff 가 생긴다.
           # 태그 한 줄만 바꾸므로 sed 를 쓴다.
           # 들여쓰기 2칸을 명시해 image 아래의 tag 만 매칭한다.
-          sed -i "s|^  tag: .*|  tag: \"${IMAGE_TAG}\"|" "$GITOPS_VALUES_PATH"
-          echo "=== 변경 결과 ==="
-          grep -A3 "^image:" "$GITOPS_VALUES_PATH"
+          if [ "$API_CHANGED" = "true" ]; then
+            sed -i "s|^  tag: .*|  tag: \"${IMAGE_TAG}\"|" apps/reused-api/values.yaml
+            grep -A3 "^image:" apps/reused-api/values.yaml
+          fi
+          if [ "$CHAT_CHANGED" = "true" ]; then
+            sed -i "s|^  tag: .*|  tag: \"${IMAGE_TAG}\"|" apps/reused-chat/values.yaml
+            grep -A3 "^image:" apps/reused-chat/values.yaml
+          fi
 
       - name: Commit and push
         env:
@@ -153,14 +239,14 @@ jobs:
         run: |
           git config user.name "logssey-gitops-bot[bot]"
           git config user.email "logssey-gitops-bot[bot]@users.noreply.github.com"
-          git add "$GITOPS_VALUES_PATH"
+          git add apps/
 
           if git diff --cached --quiet; then
             echo "변경 사항이 없다."
             exit 0
           fi
 
-          git commit -m "cd: reused-api 이미지 태그를 ${IMAGE_TAG} 로 갱신
+          git commit -m "cd: 이미지 태그를 ${IMAGE_TAG} 로 갱신
 
           PR: #${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}
           Actor: ${{ github.actor }}"
