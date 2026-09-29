@@ -4,6 +4,7 @@ import jakarta.annotation.PreDestroy;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -36,8 +37,11 @@ import com.reused.chatbot.config.ChatbotProperties;
  * 요청 전체 제한 시간은 서비스가 전용 풀의 {@code Future}로 따로 강제한다.
  *
  * <p>API 키가 비어 있으면 클라이언트를 만들지 않는다. 기동은 되고 {@link #isConfigured()}가 false다.
+ *
+ * <p>{@code app.chatbot.llm.provider=anthropic}일 때만 뜬다. 기본 공급자는 Gemini다({@link GeminiLlmClient}).
  */
 @Component
+@ConditionalOnProperty(prefix = "app.chatbot.llm", name = "provider", havingValue = "anthropic")
 public class AnthropicLlmClient implements LlmClient {
 
 	private static final Logger log = LoggerFactory.getLogger(AnthropicLlmClient.class);

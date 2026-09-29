@@ -12,6 +12,7 @@ import com.reused.admin.dto.response.CredentialStatusResponse.Credential;
 import com.reused.audit.api.AuditAction;
 import com.reused.audit.api.AuditEntry;
 import com.reused.audit.api.AuditLogger;
+import com.reused.chatbot.llm.LlmClient;
 import com.reused.chatbot.service.ChatbotFeatureService;
 
 /**
@@ -26,18 +27,21 @@ public class CredentialStatusService {
 
 	private final Environment environment;
 	private final ChatbotFeatureService chatbotFeatureService;
+	private final LlmClient llmClient;
 	private final AuditLogger auditLogger;
 
 	public CredentialStatusService(Environment environment, ChatbotFeatureService chatbotFeatureService,
-			AuditLogger auditLogger) {
+			LlmClient llmClient, AuditLogger auditLogger) {
 		this.environment = environment;
 		this.chatbotFeatureService = chatbotFeatureService;
+		this.llmClient = llmClient;
 		this.auditLogger = auditLogger;
 	}
 
 	public CredentialStatusResponse status(long adminId) {
 		boolean imageStorageConfigured = present("app.image.s3.bucket");
-		boolean llmConfigured = present("app.chatbot.llm.api-key");
+		// 공급자마다 키 설정 이름이 달라서, 설정 이름 대신 활성 어댑터에 묻는다.
+		boolean llmConfigured = llmClient.isConfigured();
 		boolean llmEnabled = llmConfigured && chatbotFeatureService.status().freeInputEnabled();
 		boolean kakaoStub = environment.getProperty("app.kakao.stub", Boolean.class, false);
 		CredentialStatusResponse response = new CredentialStatusResponse(List.of(
