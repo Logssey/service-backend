@@ -29,11 +29,11 @@ import tools.jackson.databind.ObjectMapper;
 import com.reused.TestcontainersConfiguration;
 import com.reused.auth.client.OAuthProviderClient;
 import com.reused.auth.mail.AuthMailSender;
-import com.reused.chatbot.llm.AnthropicLlmClient;
+import com.reused.chatbot.llm.GeminiLlmClient;
 import com.reused.chatbot.llm.LlmClient;
 
 /**
- * LLM API 키가 없는 실제 배선(테스트 설정은 키를 비워 둔다). 대역 없이 {@link AnthropicLlmClient}가 뜨고,
+ * LLM API 키가 없는 실제 배선(테스트 설정은 키를 비워 둔다). 대역 없이 기본 공급자인 {@link GeminiLlmClient}가 뜨고,
  * 추천 질문은 동작하며 자유 입력만 503이다. 외부 대역 구성이 다른 통합 테스트와 같아 컨텍스트를 함께 쓴다.
  */
 @Import(TestcontainersConfiguration.class)
@@ -75,9 +75,9 @@ class ChatbotWithoutLlmKeyIntegrationTest {
 	}
 
 	@Test
-	@DisplayName("키가 없으면 Anthropic 어댑터가 뜨지만 설정되지 않은 상태다")
+	@DisplayName("키가 없으면 기본 공급자인 Gemini 어댑터가 뜨지만 설정되지 않은 상태다")
 	void adapterIsNotConfigured() {
-		assertThat(llmClient).isInstanceOf(AnthropicLlmClient.class);
+		assertThat(llmClient).isInstanceOf(GeminiLlmClient.class);
 		assertThat(llmClient.isConfigured()).isFalse();
 	}
 

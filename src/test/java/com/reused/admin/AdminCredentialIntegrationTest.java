@@ -32,7 +32,7 @@ import com.reused.support.AdminTestClient.Member;
 		"app.kakao.stub=true",
 		"app.kakao.client-secret=credential-kakao-canary-7421",
 		"spring.mail.password=credential-smtp-canary-7421",
-		"app.chatbot.llm.api-key=credential-llm-canary-7421"
+		"app.chatbot.llm.gemini.api-key=credential-llm-canary-7421"
 })
 class AdminCredentialIntegrationTest {
 
