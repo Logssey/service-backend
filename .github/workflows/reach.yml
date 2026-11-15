@@ -1,0 +1,231 @@
+# Reach scan for a service repo. Copy to <service repo>/.github/workflows/reach.yml.
+#
+# DRAFT. It needs, before it can run:
+#   - the dashboard URL (repo variable REACH_URL). The token (aud logssey-reach) is accepted only from repos of
+#     logssey.reach.ci.repository-owner listed in logssey.reach.apps; PR checks from pull_request events,
+#     image checks from the default branch (logssey.reach.ci.default-branch, main)
+#   - a GitHub App that can read Logssey/dashboard-backend (secrets REACH_APP_ID, REACH_APP_PRIVATE_KEY)
+#   - an AWS role that can only pull from ECR (secret REACH_ECR_READ_ROLE_ARN), for the image job
+#   - the image repository this repo's CI/CD pushes (repo variable REACH_ECR_REPOSITORY, e.g. logssey/reused-api).
+#     Without it the image job is skipped. The dashboard maps the repo and the image to an app (logssey.reach.apps).
+#
+# Two jobs, two targets (API-12 mode):
+#   pr     PR opened/updated  -> builds the bootJar from the PR head, scans it      (mode PR, repo target)
+#   image  CI/CD finished     -> pulls the pr-{sha} image CI/CD pushed, scans it   (mode IMAGE_BUILD, image target)
+# Neither job changes CI/CD. The image job reads the image; it never runs it.
+# The scan itself is deploy/reach/ci/reach-scan.sh in dashboard-backend at REACH_REF.
+name: Reach
+
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - 'src/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle/**'
+      - '.github/workflows/reach.yml'
+  workflow_run:
+    workflows: [CI/CD]
+    types: [completed]
+
+permissions:
+  contents: read
+  id-token: write   # OIDC token for the dashboard (aud logssey-reach) and for the ECR read role
+
+concurrency:
+  group: reach-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+env:
+  REACH_URL: ${{ vars.REACH_URL }}
+  REACH_UI_URL: ${{ vars.REACH_UI_URL }}
+  POLICY: ${{ vars.REACH_POLICY || 'REPORT_ONLY' }}
+  # dashboard-backend commit with the analyzer, verdict.py, bundle.py, the judgement data and these scripts.
+  # Bump it when the rules or the analyzer change.
+  REACH_REF: 1c48e89e7f5767b4530c6299432772c17723dc25
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  pr:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # REPORT_ONLY should not block a PR when the dashboard is down; GATE should
+    continue-on-error: ${{ vars.REACH_POLICY != 'GATE' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: service
+          persist-credentials: false
+
+      - name: Token for dashboard-backend
+        id: token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.REACH_APP_ID }}
+          private-key: ${{ secrets.REACH_APP_PRIVATE_KEY }}
+          owner: Logssey
+          repositories: dashboard-backend
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Logssey/dashboard-backend
+          ref: ${{ env.REACH_REF }}
+          token: ${{ steps.token.outputs.token }}
+          path: reach
+          persist-credentials: false
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            service/*.gradle*
+            service/gradle/**
+            reach/*.gradle*
+            reach/gradle/**
+
+      - name: Scanners and analyzer
+        run: |
+          bash reach/deploy/reach/ci/install-tools.sh
+          (cd reach && bash ./gradlew --no-daemon -q :reach-analyzer:jar)
+
+      - name: Build bootJar
+        working-directory: service
+        run: bash ./gradlew --no-daemon bootJar -x test
+
+      - name: Reach scan
+        env:
+          MODE: PR
+          REPOSITORY: ${{ github.event.repository.name }}
+          COMMIT: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          SOURCE: service
+          OUT: reach-out
+        run: |
+          JAR=$(ls service/build/libs/*.jar | grep -v -- '-plain' | head -1)
+          JAR="$JAR" bash reach/deploy/reach/ci/reach-scan.sh
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: reach-pr-${{ github.event.pull_request.number }}
+          path: |
+            reach-out/verdicts.md
+            reach-out/check.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  image:
+    # CI/CD also runs when the PR is merged; the image is the same digest then, and reach-scan.sh
+    # reports the existing check instead of scanning again (same Idempotency-Key)
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      vars.REACH_ECR_REPOSITORY != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    continue-on-error: ${{ vars.REACH_POLICY != 'GATE' }}
+    env:
+      ECR_REPOSITORY: ${{ vars.REACH_ECR_REPOSITORY }}
+      COMMIT: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      # The PR head is checked out only so verdict.py can read its config files. Nothing from it runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: service
+          persist-credentials: false
+
+      - name: Token for dashboard-backend
+        id: token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.REACH_APP_ID }}
+          private-key: ${{ secrets.REACH_APP_PRIVATE_KEY }}
+          owner: Logssey
+          repositories: dashboard-backend
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Logssey/dashboard-backend
+          ref: ${{ env.REACH_REF }}
+          token: ${{ steps.token.outputs.token }}
+          path: reach
+          persist-credentials: false
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            reach/*.gradle*
+            reach/gradle/**
+
+      - name: Scanners and analyzer
+        run: |
+          bash reach/deploy/reach/ci/install-tools.sh
+          (cd reach && bash ./gradlew --no-daemon -q :reach-analyzer:jar)
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.REACH_ECR_READ_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # CI/CD pushes pr-{sha} only when the API changed. No image: nothing to scan.
+      - name: Find the image
+        id: image
+        run: |
+          if ! digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+              --image-ids imageTag="pr-$COMMIT" --query 'imageDetails[0].imageDigest' --output text 2> err.txt); then
+            if grep -q ImageNotFoundException err.txt; then
+              echo "::notice::No $ECR_REPOSITORY:pr-$COMMIT image; skipping the image scan"
+              exit 0
+            fi
+            cat err.txt >&2
+            exit 1
+          fi
+          registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "ref=$registry/$ECR_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Copy the app jar out of the image
+        if: steps.image.outputs.digest != ''
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          docker pull -q "$IMAGE_REF"
+          cid=$(docker create "$IMAGE_REF")
+          mkdir -p image-jar
+          docker cp "$cid:/app/app.jar" image-jar/app.jar
+          docker rm "$cid"
+
+      - name: Reach scan
+        if: steps.image.outputs.digest != ''
+        env:
+          MODE: IMAGE_BUILD
+          REPOSITORY: ${{ github.event.repository.name }}
+          IMAGE_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          JAR: image-jar/app.jar
+          SOURCE: service
+          OUT: reach-out
+        run: bash reach/deploy/reach/ci/reach-scan.sh
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && steps.image.outputs.digest != ''
+        with:
+          name: reach-image-${{ github.event.workflow_run.head_sha }}
+          path: |
+            reach-out/verdicts.md
+            reach-out/check.json
+          if-no-files-found: ignore
+          retention-days: 7
