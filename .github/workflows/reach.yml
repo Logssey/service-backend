@@ -5,14 +5,18 @@
 #     logssey.reach.ci.repository-owner listed in logssey.reach.apps; PR checks from pull_request events,
 #     image checks from the default branch (logssey.reach.ci.default-branch, main)
 #   - a GitHub App that can read Logssey/dashboard-backend (secrets REACH_APP_ID, REACH_APP_PRIVATE_KEY)
-#   - an AWS role that can only pull from ECR (secret REACH_ECR_READ_ROLE_ARN), for the image job
+#   - an AWS role that can only pull from ECR (secret REACH_ECR_READ_ROLE_ARN), for the image job and image targets
+#     of the manual job
 #   - the image repository this repo's CI/CD pushes (repo variable REACH_ECR_REPOSITORY, e.g. logssey/reused-api).
 #     Without it the image job is skipped. The dashboard maps the repo and the image to an app (logssey.reach.apps).
 #
-# Two jobs, two targets (API-12 mode):
-#   pr     PR opened/updated  -> builds the bootJar from the PR head, scans it      (mode PR, repo target)
-#   image  CI/CD finished     -> pulls the pr-{sha} image CI/CD pushed, scans it   (mode IMAGE_BUILD, image target)
-# Neither job changes CI/CD. The image job reads the image; it never runs it.
+# Three jobs (API-12 mode):
+#   pr      PR opened/updated  -> builds the bootJar from the PR head, scans it      (mode PR, repo target)
+#   image   CI/CD finished     -> pulls the pr-{sha} image CI/CD pushed, scans it   (mode IMAGE_BUILD, image target)
+#   manual  scan requested on the dashboard (API-01): the dashboard's GitHub App dispatches this workflow on the
+#           default branch with the check it created; builds the commit or pulls the image and uploads to that check
+#           (mode MANUAL). workflow_dispatch runs only the copy of this file on the default branch.
+# No job changes CI/CD. The image and manual jobs read the image; they never run it.
 # The scan itself is deploy/reach/ci/reach-scan.sh in dashboard-backend at REACH_REF.
 name: Reach
 
@@ -28,13 +32,34 @@ on:
   workflow_run:
     workflows: [CI/CD]
     types: [completed]
+  # Sent by the dashboard (API-01). The dashboard always sends all of these; unused ones are empty
+  workflow_dispatch:
+    inputs:
+      check_id:
+        description: Dashboard check id (results go there)
+        required: true
+      target_type:
+        description: REPO or IMAGE
+        required: true
+      commit:
+        description: REPO target commit (40-character sha)
+        required: false
+      path:
+        description: Sub path of the app in this repo (empty = repo root)
+        required: false
+      image_repository:
+        description: IMAGE target repository (e.g. logssey/reused-api)
+        required: false
+      image_digest:
+        description: IMAGE target digest (sha256:...)
+        required: false
 
 permissions:
   contents: read
   id-token: write   # OIDC token for the dashboard (aud logssey-reach) and for the ECR read role
 
 concurrency:
-  group: reach-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.workflow_run.head_sha }}
+  group: reach-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.workflow_run.head_sha || inputs.check_id }}
   cancel-in-progress: true
 
 env:
@@ -43,7 +68,7 @@ env:
   POLICY: ${{ vars.REACH_POLICY || 'REPORT_ONLY' }}
   # dashboard-backend commit with the analyzer, verdict.py, bundle.py, the judgement data and these scripts.
   # Bump it when the rules or the analyzer change.
-  REACH_REF: 1c48e89e7f5767b4530c6299432772c17723dc25
+  REACH_REF: d2775620e841908a5a5f944d0558d73927f69cec
   AWS_REGION: ap-northeast-1
 
 jobs:
@@ -224,6 +249,154 @@ jobs:
         if: always() && steps.image.outputs.digest != ''
         with:
           name: reach-image-${{ github.event.workflow_run.head_sha }}
+          path: |
+            reach-out/verdicts.md
+            reach-out/check.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  manual:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Inputs reach the shell only through env, never through ${{ }} in a script
+      CHECK_ID: ${{ inputs.check_id }}
+      TARGET_TYPE: ${{ inputs.target_type }}
+      COMMIT: ${{ inputs.commit }}
+      APP_PATH: ${{ inputs.path }}
+      IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+      IMAGE_DIGEST: ${{ inputs.image_digest }}
+    steps:
+      - name: Check the inputs
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [[ "$CHECK_ID" =~ ^[0-9]+$ ]] || fail "check_id must be a number"
+          [[ "$APP_PATH" =~ ^[A-Za-z0-9._/-]*$ && "$APP_PATH" != *..* && "$APP_PATH" != /* ]] || fail "bad path"
+          case "$TARGET_TYPE" in
+            REPO) [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "commit must be a 40-character sha" ;;
+            IMAGE)
+              [[ "$IMAGE_REPOSITORY" =~ ^[a-z0-9._/-]+$ ]] || fail "bad image_repository"
+              [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "image_digest must be sha256:<64 hex>" ;;
+            *) fail "target_type must be REPO or IMAGE" ;;
+          esac
+
+      - name: Token for dashboard-backend
+        id: token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.REACH_APP_ID }}
+          private-key: ${{ secrets.REACH_APP_PRIVATE_KEY }}
+          owner: Logssey
+          repositories: dashboard-backend
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Logssey/dashboard-backend
+          ref: ${{ env.REACH_REF }}
+          token: ${{ steps.token.outputs.token }}
+          path: reach
+          persist-credentials: false
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            reach/*.gradle*
+            reach/gradle/**
+
+      - name: Scanners and analyzer
+        run: |
+          bash reach/deploy/reach/ci/install-tools.sh
+          (cd reach && bash ./gradlew --no-daemon -q :reach-analyzer:jar)
+
+      # REPO target: build the bootJar of that commit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.target_type == 'REPO'
+        with:
+          ref: ${{ inputs.commit }}
+          path: service
+          persist-credentials: false
+
+      - name: Build bootJar
+        id: build
+        if: inputs.target_type == 'REPO'
+        run: |
+          cd "service/$APP_PATH"
+          bash ./gradlew --no-daemon bootJar -x test
+          jar=$(ls build/libs/*.jar | grep -v -- '-plain' | head -1)
+          echo "jar=service/$APP_PATH/$jar" >> "$GITHUB_OUTPUT"
+
+      # IMAGE target: pull the image by digest and copy the app jar out of it
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: inputs.target_type == 'IMAGE'
+        with:
+          role-to-assume: ${{ secrets.REACH_ECR_READ_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Copy the app jar out of the image
+        id: image
+        if: inputs.target_type == 'IMAGE'
+        run: |
+          # CI/CD tags the image pr-{sha}; that commit gives verdict.py the config files of the same build
+          tags=$(aws ecr describe-images --repository-name "$IMAGE_REPOSITORY" --image-ids imageDigest="$IMAGE_DIGEST" \
+            --query 'imageDetails[0].imageTags' --output text)
+          sha=$(tr '\t' '\n' <<< "$tags" | sed -n 's/^pr-\([0-9a-f]\{40\}\)$/\1/p' | head -1)
+          registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
+          ref="$registry/$IMAGE_REPOSITORY@$IMAGE_DIGEST"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+          docker pull -q "$ref"
+          cid=$(docker create "$ref")
+          mkdir -p image-jar
+          docker cp "$cid:/app/app.jar" image-jar/app.jar
+          docker rm "$cid"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      # Only so verdict.py can read the config files. Nothing from it runs
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.target_type == 'IMAGE' && steps.image.outputs.sha != ''
+        with:
+          ref: ${{ steps.image.outputs.sha }}
+          path: service
+          persist-credentials: false
+
+      - name: Reach scan
+        id: scan
+        env:
+          MODE: MANUAL
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          JAR: ${{ steps.build.outputs.jar || 'image-jar/app.jar' }}
+          OUT: reach-out
+        run: |
+          [ -d service ] && export SOURCE=service
+          bash reach/deploy/reach/ci/reach-scan.sh
+
+      # A step before the scan failed (bad input, build, image pull, tools): end the dashboard scan as FAILED
+      # instead of leaving it QUEUED. A failure inside reach-scan.sh uploads its own failure bundle.
+      - name: Report the failure to the dashboard
+        if: failure() && steps.scan.outcome == 'skipped'
+        run: |
+          [[ "$CHECK_ID" =~ ^[0-9]+$ ]] || exit 0
+          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=logssey-reach" | jq -r .value)
+          echo "::add-mask::$token"
+          code=BUILD_FAILED
+          [ "$TARGET_TYPE" = IMAGE ] && code=IMAGE_PULL_FAILED
+          jq -n --arg code "$code" --arg message "runner step before the scan failed, see run $GITHUB_RUN_ID" \
+            '{tools: {}, stages: [{name: "sbom", status: "failed"}],
+              failure: {code: $code, stage: "sbom", message: $message}}' | gzip > failure.json.gz
+          # 409: the scan already ended (e.g. a re-run). Anything else is only logged
+          curl -sS --connect-timeout 10 --max-time 60 -X PUT -H "Authorization: Bearer $token" \
+            -H 'Content-Type: application/json' -H 'Content-Encoding: gzip' --data-binary @failure.json.gz \
+            "$REACH_URL/api/v1/reach/ci/checks/$CHECK_ID/results" || true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: reach-manual-${{ inputs.check_id }}
           path: |
             reach-out/verdicts.md
             reach-out/check.json
