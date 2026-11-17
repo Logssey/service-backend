@@ -16,6 +16,8 @@
 #   manual  scan requested on the dashboard (API-01): the dashboard's GitHub App dispatches this workflow on the
 #           default branch with the check it created; builds the commit or pulls the image and uploads to that check
 #           (mode MANUAL). workflow_dispatch runs only the copy of this file on the default branch.
+# A target without a Java app jar (no Gradle build at the repo path, no /app/app.jar in the image) is still
+# scanned (SBOM, CVE match); L2 is skipped and its findings are NOT_ANALYZED with the reason.
 # No job changes CI/CD. The image and manual jobs read the image; they never run it.
 # The scan itself is deploy/reach/ci/reach-scan.sh in dashboard-backend at REACH_REF.
 name: Reach
@@ -68,7 +70,7 @@ env:
   POLICY: ${{ vars.REACH_POLICY || 'REPORT_ONLY' }}
   # dashboard-backend commit with the analyzer, verdict.py, bundle.py, the judgement data and these scripts.
   # Bump it when the rules or the analyzer change.
-  REACH_REF: d2775620e841908a5a5f944d0558d73927f69cec
+  REACH_REF: bb9738ba7197e645549dc41645a047e3a25b0992
   AWS_REGION: ap-northeast-1
 
 jobs:
@@ -222,6 +224,7 @@ jobs:
           echo "ref=$registry/$ECR_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
 
       - name: Copy the app jar out of the image
+        id: jar
         if: steps.image.outputs.digest != ''
         env:
           IMAGE_REF: ${{ steps.image.outputs.ref }}
@@ -229,7 +232,12 @@ jobs:
           docker pull -q "$IMAGE_REF"
           cid=$(docker create "$IMAGE_REF")
           mkdir -p image-jar
-          docker cp "$cid:/app/app.jar" image-jar/app.jar
+          # No /app/app.jar (not a Java image): scanned without L2
+          if docker cp "$cid:/app/app.jar" image-jar/app.jar 2> /dev/null; then
+            echo "jar=image-jar/app.jar" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no /app/app.jar in the image; scanning without L2"
+          fi
           docker rm "$cid"
 
       - name: Reach scan
@@ -240,7 +248,7 @@ jobs:
           IMAGE_REPOSITORY: ${{ env.ECR_REPOSITORY }}
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           IMAGE_REF: ${{ steps.image.outputs.ref }}
-          JAR: image-jar/app.jar
+          JAR: ${{ steps.jar.outputs.jar }}
           SOURCE: service
           OUT: reach-out
         run: bash reach/deploy/reach/ci/reach-scan.sh
@@ -320,14 +328,22 @@ jobs:
           path: service
           persist-credentials: false
 
+      # A Gradle project at that path is built and analysed (L2). Anything else (e.g. a Node app with
+      # package-lock.json) is scanned from its lock files only: L2 is skipped, findings are NOT_ANALYZED
       - name: Build bootJar
         id: build
         if: inputs.target_type == 'REPO'
         run: |
-          cd "service/$APP_PATH"
-          bash ./gradlew --no-daemon bootJar -x test
-          jar=$(ls build/libs/*.jar | grep -v -- '-plain' | head -1)
-          echo "jar=service/$APP_PATH/$jar" >> "$GITHUB_OUTPUT"
+          dir="service${APP_PATH:+/$APP_PATH}"
+          [ -d "$dir" ] || { echo "::error::path $APP_PATH not found at $COMMIT"; exit 1; }
+          if [ -f "$dir/gradlew" ]; then
+            (cd "$dir" && bash ./gradlew --no-daemon bootJar -x test)
+            jar=$(ls "$dir"/build/libs/*.jar | grep -v -- '-plain' | head -1)
+            echo "jar=$jar" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no Gradle build at $dir; scanning its lock files without L2"
+            echo "fsdir=$dir" >> "$GITHUB_OUTPUT"
+          fi
 
       # IMAGE target: pull the image by digest and copy the app jar out of it
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -350,7 +366,12 @@ jobs:
           docker pull -q "$ref"
           cid=$(docker create "$ref")
           mkdir -p image-jar
-          docker cp "$cid:/app/app.jar" image-jar/app.jar
+          # No /app/app.jar (not a Java image): the image is still scanned (SBOM, match), L2 is skipped
+          if docker cp "$cid:/app/app.jar" image-jar/app.jar 2> /dev/null; then
+            echo "jar=image-jar/app.jar" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no /app/app.jar in $IMAGE_REPOSITORY; scanning the image without L2"
+          fi
           docker rm "$cid"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -368,7 +389,8 @@ jobs:
         env:
           MODE: MANUAL
           IMAGE_REF: ${{ steps.image.outputs.ref }}
-          JAR: ${{ steps.build.outputs.jar || 'image-jar/app.jar' }}
+          JAR: ${{ steps.build.outputs.jar || steps.image.outputs.jar }}
+          FS_DIR: ${{ steps.build.outputs.fsdir }}
           OUT: reach-out
         run: |
           [ -d service ] && export SOURCE=service
