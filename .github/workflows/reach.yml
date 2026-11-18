@@ -16,6 +16,9 @@
 #   manual  scan requested on the dashboard (API-01): the dashboard's GitHub App dispatches this workflow on the
 #           default branch with the check it created; builds the commit or pulls the image and uploads to that check
 #           (mode MANUAL). workflow_dispatch runs only the copy of this file on the default branch.
+#           The dashboard's daily rescan (mode SCHEDULE, once a day for every running image) uses the same job with
+#           rescan_of: the stored SBOM of that scan is matched again with today's vulnerability DB; the image is
+#           still pulled for the app jar (L2). Nothing is rebuilt.
 # A target without a Java app jar (no Gradle build at the repo path, no /app/app.jar in the image) is still
 # scanned (SBOM, CVE match); L2 is skipped and its findings are NOT_ANALYZED with the reason.
 # No job changes CI/CD. The image and manual jobs read the image; they never run it.
@@ -55,6 +58,10 @@ on:
       image_digest:
         description: IMAGE target digest (sha256:...)
         required: false
+      # Sent only for a rescan (API-01 rescanOf, daily rescan)
+      rescan_of:
+        description: Scan whose stored SBOM is matched again (empty = make the SBOM)
+        required: false
 
 permissions:
   contents: read
@@ -70,7 +77,7 @@ env:
   POLICY: ${{ vars.REACH_POLICY || 'REPORT_ONLY' }}
   # dashboard-backend commit with the analyzer, verdict.py, bundle.py, the judgement data and these scripts.
   # Bump it when the rules or the analyzer change.
-  REACH_REF: bb9738ba7197e645549dc41645a047e3a25b0992
+  REACH_REF: 9a6f5f033c5a67d42acaacabfa7aebd11d0e489d
   AWS_REGION: ap-northeast-1
 
 jobs:
@@ -275,11 +282,13 @@ jobs:
       APP_PATH: ${{ inputs.path }}
       IMAGE_REPOSITORY: ${{ inputs.image_repository }}
       IMAGE_DIGEST: ${{ inputs.image_digest }}
+      RESCAN_OF: ${{ inputs.rescan_of }}
     steps:
       - name: Check the inputs
         run: |
           fail() { echo "::error::$1"; exit 1; }
           [[ "$CHECK_ID" =~ ^[0-9]+$ ]] || fail "check_id must be a number"
+          [[ "$RESCAN_OF" =~ ^[0-9]*$ ]] || fail "rescan_of must be a number"
           [[ "$APP_PATH" =~ ^[A-Za-z0-9._/-]*$ && "$APP_PATH" != *..* && "$APP_PATH" != /* ]] || fail "bad path"
           case "$TARGET_TYPE" in
             REPO) [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "commit must be a 40-character sha" ;;
