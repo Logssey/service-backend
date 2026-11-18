@@ -21,7 +21,12 @@
 #           still pulled for the app jar (L2). Nothing is rebuilt.
 # A target without a Java app jar (no Gradle build at the repo path, no /app/app.jar in the image) is still
 # scanned (SBOM, CVE match); L2 is skipped and its findings are NOT_ANALYZED with the reason.
-# No job changes CI/CD. The image and manual jobs read the image; they never run it.
+# L3 (FR-14): when this repo has .reach/l3-scenario.json, the image job also runs the image with the JaCoCo agent
+# next to the scenario's services and sends the scenario's requests (data, no script) (deploy/reach/ci/l3-run.sh).
+# The result gets, per CVE, how far that run got towards the vulnerable code and in which requests. It is evidence
+# next to the L2 verdict and never changes it. The containers get no runner secret; a failed L3 run never fails
+# the scan. The manual job and rescans do not run the app.
+# No job changes CI/CD.
 # The scan itself is deploy/reach/ci/reach-scan.sh in dashboard-backend at REACH_REF.
 name: Reach
 
@@ -77,7 +82,7 @@ env:
   POLICY: ${{ vars.REACH_POLICY || 'REPORT_ONLY' }}
   # dashboard-backend commit with the analyzer, verdict.py, bundle.py, the judgement data and these scripts.
   # Bump it when the rules or the analyzer change.
-  REACH_REF: 9a6f5f033c5a67d42acaacabfa7aebd11d0e489d
+  REACH_REF: f4048d5dc1c1771d578bd5bdb890a8ced662fd6c
   AWS_REGION: ap-northeast-1
 
 jobs:
@@ -247,6 +252,19 @@ jobs:
           fi
           docker rm "$cid"
 
+      # The scenario is read from the PR head as data only (requests to the app); the scripts are dashboard-backend's
+      - name: L3 run
+        id: l3
+        if: steps.jar.outputs.jar != '' && hashFiles('service/.reach/l3-scenario.json') != ''
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          JAR: ${{ steps.jar.outputs.jar }}
+          SCENARIO: service/.reach/l3-scenario.json
+          OUT: reach-out/l3
+        run: bash reach/deploy/reach/ci/l3-run.sh
+
       - name: Reach scan
         if: steps.image.outputs.digest != ''
         env:
@@ -258,6 +276,10 @@ jobs:
           JAR: ${{ steps.jar.outputs.jar }}
           SOURCE: service
           OUT: reach-out
+          # only what a finished L3 step wrote
+          L3_SEGMENTS: ${{ steps.l3.outcome == 'success' && steps.l3.outputs.segments || '' }}
+          L3_RUN: ${{ steps.l3.outcome == 'success' && steps.l3.outputs.run || '' }}
+          L3_ERROR: ${{ steps.l3.outcome == 'failure' && 'L3 run failed on the runner, see the workflow log' || '' }}
         run: bash reach/deploy/reach/ci/reach-scan.sh
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -267,6 +289,10 @@ jobs:
           path: |
             reach-out/verdicts.md
             reach-out/check.json
+            reach-out/l3-result.json
+            reach-out/l3/segments/
+            reach-out/l3/steps.json
+            reach-out/l3/run.json
           if-no-files-found: ignore
           retention-days: 7
 
