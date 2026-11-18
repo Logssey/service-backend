@@ -1,0 +1,163 @@
+{
+  "schema": "reach-l3-scenario/v1",
+  "version": "2026-11-18.1",
+  "services": [
+    {
+      "name": "db",
+      "image": "postgres:18.6-alpine",
+      "env": {
+        "POSTGRES_DB": "reused",
+        "POSTGRES_USER": "reused",
+        "POSTGRES_PASSWORD": "reach-l3"
+      },
+      "ready": [
+        "pg_isready",
+        "-h",
+        "127.0.0.1",
+        "-U",
+        "reused",
+        "-d",
+        "reused"
+      ]
+    },
+    {
+      "name": "redis",
+      "image": "redis:7.4-alpine",
+      "ready": [
+        "redis-cli",
+        "ping"
+      ]
+    }
+  ],
+  "app": {
+    "port": 8080,
+    "env": {
+      "SPRING_PROFILES_ACTIVE": "local",
+      "KAKAO_STUB": "true",
+      "SPRING_DATASOURCE_URL": "jdbc:postgresql://db:5432/reused",
+      "SPRING_DATASOURCE_USERNAME": "reused",
+      "SPRING_DATASOURCE_PASSWORD": "reach-l3",
+      "SPRING_DATA_REDIS_HOST": "redis"
+    },
+    "generate": [
+      "JWT_SECRET"
+    ],
+    "ready": {
+      "path": "/api/v1/categories",
+      "status": 200
+    },
+    "startTimeoutSeconds": 180
+  },
+  "steps": [
+    {
+      "name": "categories",
+      "request": "GET /api/v1/categories",
+      "save": {
+        "categoryId": "0.categoryId"
+      }
+    },
+    {
+      "name": "kakao login (stub)",
+      "request": "POST /api/v1/auth/oauth/kakao",
+      "json": {
+        "code": "reach-l3-user",
+        "redirectUri": "http://localhost/cb"
+      },
+      "save": {
+        "signupToken": "signupToken"
+      }
+    },
+    {
+      "name": "signup",
+      "request": "POST /api/v1/auth/signup",
+      "json": {
+        "signupToken": "${signupToken}",
+        "nickname": "reachl3",
+        "termsOfServiceAgreed": true,
+        "privacyPolicyAgreed": true
+      },
+      "save": {
+        "token": "accessToken"
+      }
+    },
+    {
+      "name": "create listing",
+      "request": "POST /api/v1/listings",
+      "repeat": 22,
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      },
+      "json": {
+        "title": "item ${i}",
+        "description": "description ${i}",
+        "price": 15000,
+        "itemCondition": "USED",
+        "tradeMethod": "DIRECT",
+        "categoryId": "${categoryId}"
+      }
+    },
+    {
+      "name": "listings page 1",
+      "request": "GET /api/v1/listings",
+      "save": {
+        "cursor": "nextCursor",
+        "listingId": "items.0.listingId"
+      }
+    },
+    {
+      "name": "listings page 2",
+      "request": "GET /api/v1/listings?cursor=${cursor}"
+    },
+    {
+      "name": "listing detail",
+      "request": "GET /api/v1/listings/${listingId}"
+    },
+    {
+      "name": "wish",
+      "request": "POST /api/v1/listings/${listingId}/wish",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      }
+    },
+    {
+      "name": "my wishes",
+      "request": "GET /api/v1/wishes",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      }
+    },
+    {
+      "name": "community posts",
+      "request": "GET /api/v1/community/posts"
+    },
+    {
+      "name": "notices",
+      "request": "GET /api/v1/notices"
+    },
+    {
+      "name": "nickname check",
+      "request": "GET /api/v1/users/nickname/check?nickname=abc"
+    },
+    {
+      "name": "my selling listings",
+      "request": "GET /api/v1/me/selling/listings",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      }
+    },
+    {
+      "name": "notifications",
+      "request": "GET /api/v1/notifications",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      }
+    },
+    {
+      "name": "trades",
+      "request": "GET /api/v1/trades",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      }
+    }
+  ]
+}
