@@ -82,7 +82,7 @@ env:
   POLICY: ${{ vars.REACH_POLICY || 'REPORT_ONLY' }}
   # dashboard-backend commit with the analyzer, verdict.py, bundle.py, the judgement data and these scripts.
   # Bump it when the rules or the analyzer change.
-  REACH_REF: f4048d5dc1c1771d578bd5bdb890a8ced662fd6c
+  REACH_REF: 89c4f911cb3163a4169265c4645f67d600fb1dd3
   AWS_REGION: ap-northeast-1
 
 jobs:
