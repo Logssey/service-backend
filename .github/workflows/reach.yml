@@ -4,9 +4,12 @@
 #   - the dashboard URL (repo variable REACH_URL). The token (aud logssey-reach) is accepted only from repos of
 #     logssey.reach.ci.repository-owner listed in logssey.reach.apps; PR checks from pull_request events,
 #     image checks from the default branch (logssey.reach.ci.default-branch, main)
-#   - a GitHub App that can read Logssey/dashboard-backend (secrets REACH_APP_ID, REACH_APP_PRIVATE_KEY)
-#   - the dashboard-backend commit whose analyzer, judgement data and scripts run here (repo variable REACH_REF,
-#     a 40-character commit on develop). Every job stops when it is missing or not on develop
+#   - nothing to read Logssey/dashboard-backend (public). Each job asks the dashboard which of its commits it runs
+#     (GET /api/v1/reach/ci/code) and runs the analyzer, judgement data and scripts of that commit, so they match
+#     the API they upload to. The repo variable REACH_REF (a 40-character commit on develop) pins another one.
+#     Every job stops when the commit is unknown or not on develop
+#   - the dashboard's GitHub App installed on this repo (Actions: write), for the manual job (dashboard scans and the
+#     daily rescan). It is the only app; the dashboard keeps its key
 #   - an AWS role that can only pull from ECR (secret REACH_ECR_READ_ROLE_ARN), for the image job and image targets
 #     of the manual job
 #   - the image repository this repo's CI/CD pushes (repo variable REACH_ECR_REPOSITORY, e.g. logssey/reused-api).
@@ -31,7 +34,7 @@
 # the scan. The manual job and rescans do not run the app; a rescan matches the execution record the dashboard kept
 # for that image again (reach-scan.sh), so a new CVE gets L3 evidence without a new run.
 # No job changes CI/CD.
-# The scan itself is deploy/reach/ci/reach-scan.sh in dashboard-backend at REACH_REF (repo variable).
+# The scan itself is deploy/reach/ci/reach-scan.sh in dashboard-backend at the commit of step "Reach code".
 name: Reach
 
 on:
@@ -80,11 +83,7 @@ env:
   REACH_URL: ${{ vars.REACH_URL }}
   REACH_UI_URL: ${{ vars.REACH_UI_URL }}
   POLICY: ${{ vars.REACH_POLICY || 'REPORT_ONLY' }}
-  # dashboard-backend commit with the analyzer, verdict.py, bundle.py, the judgement data and these scripts.
-  # A repository variable, not a line of this file: new rules or a new analyzer then need no pull request here
-  # (a pull request here builds and deploys a new image of the service). Set it to the merge commit once the
-  # dashboard runs that commit; the next scan uses it. "Check REACH_REF" accepts only a commit on REACH_REF_BRANCH.
-  REACH_REF: ${{ vars.REACH_REF }}
+  # Step "Reach code" accepts only a commit on this branch of Logssey/dashboard-backend
   REACH_REF_BRANCH: develop
   AWS_REGION: ap-northeast-1
 
@@ -129,39 +128,48 @@ jobs:
             echo "scan=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Token for dashboard-backend
-        id: token
-        if: steps.scope.outputs.scan == 'true'
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
-        with:
-          app-id: ${{ secrets.REACH_APP_ID }}
-          private-key: ${{ secrets.REACH_APP_PRIVATE_KEY }}
-          owner: Logssey
-          repositories: dashboard-backend
-
-      # The variable decides which code runs in this job. Nothing of it is fetched before this passes
-      - name: Check REACH_REF
+      # Which dashboard-backend code (analyzer, judgement data, scripts) runs in this job: the commit the dashboard
+      # itself runs (GET /api/v1/reach/ci/code), so the scripts always match the API they upload to. The repository
+      # variable REACH_REF, when set, pins it instead (rollback; a dashboard that does not know its commit).
+      # Nothing of it is fetched before it is checked to be on REACH_REF_BRANCH. Logssey/dashboard-backend is public
+      - name: Reach code
+        id: code
         if: steps.scope.outputs.scan == 'true'
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ vars.REACH_REF }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
-          [[ "$REACH_REF" =~ ^[0-9a-f]{40}$ ]] \
-            || fail "Set the repository variable REACH_REF to a 40-character commit on $REACH_REF_BRANCH of Logssey/dashboard-backend"
-          # commits of REACH_REF that the branch does not have: 0 only when the branch contains it
-          behind=$(curl -sS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/Logssey/dashboard-backend/compare/$REACH_REF...$REACH_REF_BRANCH" \
+          ref="$PINNED"
+          if [ -z "$ref" ]; then
+            [ -n "$REACH_URL" ] || fail "Set the repository variable REACH_URL (the dashboard)"
+            body=$(curl -sSf --retry 4 --retry-delay 5 --connect-timeout 10 --max-time 60 \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=logssey-reach") || fail "No OIDC token for the dashboard"
+            token=$(jq -r '.value // empty' <<< "$body")
+            echo "::add-mask::$token"
+            body=$(curl -sSf --retry 4 --retry-delay 5 --retry-connrefused --connect-timeout 10 --max-time 60 \
+              -H "Authorization: Bearer $token" "${REACH_URL%/}/api/v1/reach/ci/code") \
+              || fail "The dashboard at $REACH_URL did not say which Reach code it runs (GET /api/v1/reach/ci/code). Set REACH_REF to pin one"
+            ref=$(jq -r '.commit // empty' <<< "$body")
+          fi
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || fail "Reach code '$ref' is not a 40-character commit of Logssey/dashboard-backend"
+          # commits of ref that the branch does not have: 0 only when the branch contains it
+          auth=(); [ -n "$GH_TOKEN" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+          behind=$(curl -sS --retry 3 "${auth[@]}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/Logssey/dashboard-backend/compare/$ref...$REACH_REF_BRANCH" \
             | jq -r '.behind_by // empty') || true
-          [ -n "$behind" ] || fail "REACH_REF $REACH_REF was not found in Logssey/dashboard-backend (or the request to GitHub failed)"
-          [ "$behind" = 0 ] || fail "REACH_REF $REACH_REF is not on $REACH_REF_BRANCH of Logssey/dashboard-backend"
-          echo "Reach code: Logssey/dashboard-backend@$REACH_REF" >> "$GITHUB_STEP_SUMMARY"
+          [ -n "$behind" ] || fail "Reach code $ref was not found in Logssey/dashboard-backend (or the request to GitHub failed)"
+          [ "$behind" = 0 ] || fail "Reach code $ref is not on $REACH_REF_BRANCH of Logssey/dashboard-backend"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "REACH_REF=$ref" >> "$GITHUB_ENV"   # reach-scan.sh records it on the scan (tools.reachRef)
+          echo "Reach code: Logssey/dashboard-backend@$ref${PINNED:+ (pinned by the repository variable REACH_REF)}" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.scope.outputs.scan == 'true'
         with:
           repository: Logssey/dashboard-backend
-          ref: ${{ env.REACH_REF }}
-          token: ${{ steps.token.outputs.token }}
+          ref: ${{ steps.code.outputs.ref }}
           path: reach
           persist-credentials: false
 
@@ -235,36 +243,46 @@ jobs:
           path: service
           persist-credentials: false
 
-      - name: Token for dashboard-backend
-        id: token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
-        with:
-          app-id: ${{ secrets.REACH_APP_ID }}
-          private-key: ${{ secrets.REACH_APP_PRIVATE_KEY }}
-          owner: Logssey
-          repositories: dashboard-backend
-
-      # The variable decides which code runs in this job. Nothing of it is fetched before this passes
-      - name: Check REACH_REF
+      # Which dashboard-backend code (analyzer, judgement data, scripts) runs in this job: the commit the dashboard
+      # itself runs (GET /api/v1/reach/ci/code), so the scripts always match the API they upload to. The repository
+      # variable REACH_REF, when set, pins it instead (rollback; a dashboard that does not know its commit).
+      # Nothing of it is fetched before it is checked to be on REACH_REF_BRANCH. Logssey/dashboard-backend is public
+      - name: Reach code
+        id: code
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ vars.REACH_REF }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
-          [[ "$REACH_REF" =~ ^[0-9a-f]{40}$ ]] \
-            || fail "Set the repository variable REACH_REF to a 40-character commit on $REACH_REF_BRANCH of Logssey/dashboard-backend"
-          # commits of REACH_REF that the branch does not have: 0 only when the branch contains it
-          behind=$(curl -sS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/Logssey/dashboard-backend/compare/$REACH_REF...$REACH_REF_BRANCH" \
+          ref="$PINNED"
+          if [ -z "$ref" ]; then
+            [ -n "$REACH_URL" ] || fail "Set the repository variable REACH_URL (the dashboard)"
+            body=$(curl -sSf --retry 4 --retry-delay 5 --connect-timeout 10 --max-time 60 \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=logssey-reach") || fail "No OIDC token for the dashboard"
+            token=$(jq -r '.value // empty' <<< "$body")
+            echo "::add-mask::$token"
+            body=$(curl -sSf --retry 4 --retry-delay 5 --retry-connrefused --connect-timeout 10 --max-time 60 \
+              -H "Authorization: Bearer $token" "${REACH_URL%/}/api/v1/reach/ci/code") \
+              || fail "The dashboard at $REACH_URL did not say which Reach code it runs (GET /api/v1/reach/ci/code). Set REACH_REF to pin one"
+            ref=$(jq -r '.commit // empty' <<< "$body")
+          fi
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || fail "Reach code '$ref' is not a 40-character commit of Logssey/dashboard-backend"
+          # commits of ref that the branch does not have: 0 only when the branch contains it
+          auth=(); [ -n "$GH_TOKEN" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+          behind=$(curl -sS --retry 3 "${auth[@]}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/Logssey/dashboard-backend/compare/$ref...$REACH_REF_BRANCH" \
             | jq -r '.behind_by // empty') || true
-          [ -n "$behind" ] || fail "REACH_REF $REACH_REF was not found in Logssey/dashboard-backend (or the request to GitHub failed)"
-          [ "$behind" = 0 ] || fail "REACH_REF $REACH_REF is not on $REACH_REF_BRANCH of Logssey/dashboard-backend"
-          echo "Reach code: Logssey/dashboard-backend@$REACH_REF" >> "$GITHUB_STEP_SUMMARY"
+          [ -n "$behind" ] || fail "Reach code $ref was not found in Logssey/dashboard-backend (or the request to GitHub failed)"
+          [ "$behind" = 0 ] || fail "Reach code $ref is not on $REACH_REF_BRANCH of Logssey/dashboard-backend"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "REACH_REF=$ref" >> "$GITHUB_ENV"   # reach-scan.sh records it on the scan (tools.reachRef)
+          echo "Reach code: Logssey/dashboard-backend@$ref${PINNED:+ (pinned by the repository variable REACH_REF)}" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Logssey/dashboard-backend
-          ref: ${{ env.REACH_REF }}
-          token: ${{ steps.token.outputs.token }}
+          ref: ${{ steps.code.outputs.ref }}
           path: reach
           persist-credentials: false
 
@@ -394,36 +412,46 @@ jobs:
             *) fail "target_type must be REPO or IMAGE" ;;
           esac
 
-      - name: Token for dashboard-backend
-        id: token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
-        with:
-          app-id: ${{ secrets.REACH_APP_ID }}
-          private-key: ${{ secrets.REACH_APP_PRIVATE_KEY }}
-          owner: Logssey
-          repositories: dashboard-backend
-
-      # The variable decides which code runs in this job. Nothing of it is fetched before this passes
-      - name: Check REACH_REF
+      # Which dashboard-backend code (analyzer, judgement data, scripts) runs in this job: the commit the dashboard
+      # itself runs (GET /api/v1/reach/ci/code), so the scripts always match the API they upload to. The repository
+      # variable REACH_REF, when set, pins it instead (rollback; a dashboard that does not know its commit).
+      # Nothing of it is fetched before it is checked to be on REACH_REF_BRANCH. Logssey/dashboard-backend is public
+      - name: Reach code
+        id: code
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ vars.REACH_REF }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
-          [[ "$REACH_REF" =~ ^[0-9a-f]{40}$ ]] \
-            || fail "Set the repository variable REACH_REF to a 40-character commit on $REACH_REF_BRANCH of Logssey/dashboard-backend"
-          # commits of REACH_REF that the branch does not have: 0 only when the branch contains it
-          behind=$(curl -sS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/Logssey/dashboard-backend/compare/$REACH_REF...$REACH_REF_BRANCH" \
+          ref="$PINNED"
+          if [ -z "$ref" ]; then
+            [ -n "$REACH_URL" ] || fail "Set the repository variable REACH_URL (the dashboard)"
+            body=$(curl -sSf --retry 4 --retry-delay 5 --connect-timeout 10 --max-time 60 \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=logssey-reach") || fail "No OIDC token for the dashboard"
+            token=$(jq -r '.value // empty' <<< "$body")
+            echo "::add-mask::$token"
+            body=$(curl -sSf --retry 4 --retry-delay 5 --retry-connrefused --connect-timeout 10 --max-time 60 \
+              -H "Authorization: Bearer $token" "${REACH_URL%/}/api/v1/reach/ci/code") \
+              || fail "The dashboard at $REACH_URL did not say which Reach code it runs (GET /api/v1/reach/ci/code). Set REACH_REF to pin one"
+            ref=$(jq -r '.commit // empty' <<< "$body")
+          fi
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || fail "Reach code '$ref' is not a 40-character commit of Logssey/dashboard-backend"
+          # commits of ref that the branch does not have: 0 only when the branch contains it
+          auth=(); [ -n "$GH_TOKEN" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+          behind=$(curl -sS --retry 3 "${auth[@]}" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/Logssey/dashboard-backend/compare/$ref...$REACH_REF_BRANCH" \
             | jq -r '.behind_by // empty') || true
-          [ -n "$behind" ] || fail "REACH_REF $REACH_REF was not found in Logssey/dashboard-backend (or the request to GitHub failed)"
-          [ "$behind" = 0 ] || fail "REACH_REF $REACH_REF is not on $REACH_REF_BRANCH of Logssey/dashboard-backend"
-          echo "Reach code: Logssey/dashboard-backend@$REACH_REF" >> "$GITHUB_STEP_SUMMARY"
+          [ -n "$behind" ] || fail "Reach code $ref was not found in Logssey/dashboard-backend (or the request to GitHub failed)"
+          [ "$behind" = 0 ] || fail "Reach code $ref is not on $REACH_REF_BRANCH of Logssey/dashboard-backend"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "REACH_REF=$ref" >> "$GITHUB_ENV"   # reach-scan.sh records it on the scan (tools.reachRef)
+          echo "Reach code: Logssey/dashboard-backend@$ref${PINNED:+ (pinned by the repository variable REACH_REF)}" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Logssey/dashboard-backend
-          ref: ${{ env.REACH_REF }}
-          token: ${{ steps.token.outputs.token }}
+          ref: ${{ steps.code.outputs.ref }}
           path: reach
           persist-credentials: false
 
