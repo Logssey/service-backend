@@ -14,6 +14,7 @@
 #
 # Three jobs (API-12 mode):
 #   pr      PR opened/updated  -> builds the bootJar from the PR head, scans it      (mode PR, repo target)
+#           Only when src/, the Gradle files or this workflow changed; otherwise it passes without a scan
 #   image   CI/CD finished     -> pulls the pr-{sha} image CI/CD pushed, scans it   (mode IMAGE_BUILD, image target)
 #   manual  scan requested on the dashboard (API-01): the dashboard's GitHub App dispatches this workflow on the
 #           default branch with the check it created; builds the commit or pulls the image and uploads to that check
@@ -34,14 +35,10 @@
 name: Reach
 
 on:
+  # Every PR, so the pr check always reports (a required check of a workflow that does not start waits forever).
+  # The pr job itself scans only when the files it looks at changed (step "Changed files")
   pull_request:
     branches: [develop, main]
-    paths:
-      - 'src/**'
-      - 'build.gradle'
-      - 'settings.gradle'
-      - 'gradle/**'
-      - '.github/workflows/reach.yml'
   workflow_run:
     workflows: [CI/CD]
     types: [completed]
@@ -93,7 +90,7 @@ env:
 
 jobs:
   pr:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # REPORT_ONLY should not block a PR when the dashboard is down; GATE should
@@ -102,10 +99,39 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: service
+          fetch-depth: 2   # the PR merge commit and its parents; HEAD^1 is the base branch
           persist-credentials: false
+
+      # The path filter lives here, not under on.pull_request: the job must report on every PR (see on).
+      # The PR scan builds the bootJar, so only src/, the Gradle files and this workflow matter.
+      # A fork PR gets no secrets and no OIDC token: it cannot be scanned, and under GATE it fails instead of passing
+      - name: Changed files
+        id: scope
+        env:
+          FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          relevant=true
+          if changed=$(git -C service diff --name-only HEAD^1 HEAD); then
+            grep -qE '^(src/|gradle/|build\.gradle$|settings\.gradle$|\.github/workflows/reach\.yml$)' <<< "$changed" \
+              || relevant=false
+          else
+            echo "::warning::Could not list the changed files; scanning"
+          fi
+          if [ "$relevant" = false ]; then
+            echo "No change in src/, the Gradle files or this workflow: no scan" >> "$GITHUB_STEP_SUMMARY"
+            echo "scan=false" >> "$GITHUB_OUTPUT"
+          elif [ "$FORK" = true ]; then
+            msg="A PR from a fork cannot be scanned (no dashboard token). Push the branch to $GITHUB_REPOSITORY and open the PR from it"
+            [ "$POLICY" = GATE ] && { echo "::error::$msg"; exit 1; }
+            echo "::notice::$msg"
+            echo "scan=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "scan=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Token for dashboard-backend
         id: token
+        if: steps.scope.outputs.scan == 'true'
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ secrets.REACH_APP_ID }}
@@ -115,6 +141,7 @@ jobs:
 
       # The variable decides which code runs in this job. Nothing of it is fetched before this passes
       - name: Check REACH_REF
+        if: steps.scope.outputs.scan == 'true'
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
@@ -130,6 +157,7 @@ jobs:
           echo "Reach code: Logssey/dashboard-backend@$REACH_REF" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.scope.outputs.scan == 'true'
         with:
           repository: Logssey/dashboard-backend
           ref: ${{ env.REACH_REF }}
@@ -138,6 +166,7 @@ jobs:
           persist-credentials: false
 
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        if: steps.scope.outputs.scan == 'true'
         with:
           distribution: temurin
           java-version: '21'
@@ -149,15 +178,18 @@ jobs:
             reach/gradle/**
 
       - name: Scanners and analyzer
+        if: steps.scope.outputs.scan == 'true'
         run: |
           bash reach/deploy/reach/ci/install-tools.sh
           (cd reach && bash ./gradlew --no-daemon -q :reach-analyzer:jar)
 
       - name: Build bootJar
+        if: steps.scope.outputs.scan == 'true'
         working-directory: service
         run: bash ./gradlew --no-daemon bootJar -x test
 
       - name: Reach scan
+        if: steps.scope.outputs.scan == 'true'
         env:
           MODE: PR
           REPOSITORY: ${{ github.event.repository.name }}
@@ -172,7 +204,7 @@ jobs:
           JAR="$JAR" bash reach/deploy/reach/ci/reach-scan.sh
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
+        if: always() && steps.scope.outputs.scan == 'true'
         with:
           name: reach-pr-${{ github.event.pull_request.number }}
           path: |
