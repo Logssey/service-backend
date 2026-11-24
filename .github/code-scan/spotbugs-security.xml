@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SpotBugs 보안 분류만 남긴다 (code-scan.yml) -->
+<FindBugsFilter>
+  <Match>
+    <Bug category="SECURITY"/>
+  </Match>
+</FindBugsFilter>
