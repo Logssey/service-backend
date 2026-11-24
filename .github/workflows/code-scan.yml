@@ -84,12 +84,24 @@ jobs:
             echo "::notice::CODE_SCAN_URL·REACH_URL 변수가 없어 대시보드 업로드를 건너뜁니다"
             exit 0
           fi
+          # 대시보드 앞단 nginx 는 본문을 1MB 까지만 받는다. Semgrep SARIF 는 실행한 규칙 설명 때문에 수 MB 라서
+          # 결과와 걸린 규칙에서 대시보드가 읽는 값만 남긴다 (수 KB)
+          # shellcheck disable=SC2016 # jq 변수($res 등)라 펼치지 않는다
+          slim='{version, runs: [.runs[] | (.results // []) as $res | ($res | map(.ruleId) | unique) as $ids | {
+              tool: {driver: {name: .tool.driver.name, rules: [(.tool.driver.rules // [])[] | select(.id | IN($ids[]))
+                | {id, defaultConfiguration, helpUri, shortDescription, properties: {tags: .properties.tags}, relationships}]}},
+              originalUriBaseIds,
+              results: [$res[] | {ruleId, level, message: {text: .message.text},
+                locations: [.locations[0] | {physicalLocation: {artifactLocation: .physicalLocation.artifactLocation,
+                  region: {startLine: .physicalLocation.region.startLine}}}]}]
+            }]} | del(.. | nulls)'
           token=$(curl -sSf --retry 3 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=logssey-code" | jq -r .value)
           for tool in semgrep spotbugs; do
+            jq -c "$slim" "$tool.sarif" > "$tool.upload.json"
             curl -sSf --retry 3 --connect-timeout 10 --max-time 120 -X POST \
               -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-              --data-binary "@$tool.sarif" \
+              --data-binary "@$tool.upload.json" \
               "${DASHBOARD_URL%/}/api/v1/code/scans?tool=$tool&commit=$GITHUB_SHA&workspace=$GITHUB_WORKSPACE"
             echo
           done
