@@ -1,0 +1,22 @@
+// 코드 취약점 검사(code-scan.yml)만 쓰는 Gradle init 스크립트. build.gradle은 바꾸지 않는다.
+// SpotBugs + FindSecBugs(보안 규칙)를 루트 프로젝트(Java API)에 붙이고 SARIF로 남긴다. 발견이 있어도 빌드는 실패하지 않는다.
+initscript {
+    repositories { gradlePluginPortal() }
+    dependencies { classpath 'com.github.spotbugs.snom:spotbugs-gradle-plugin:6.5.13' }
+}
+
+rootProject {
+    apply plugin: com.github.spotbugs.snom.SpotBugsPlugin
+    dependencies {
+        spotbugsPlugins 'com.h3xstream.findsecbugs:findsecbugs-plugin:1.14.0'
+    }
+    spotbugs {
+        ignoreFailures = true
+        // 보안 규칙(FindSecBugs의 SECURITY 분류)만 본다. 코드 품질 규칙은 이 검사의 범위가 아니다
+        includeFilter = file("${rootDir}/.github/code-scan/spotbugs-security.xml")
+    }
+    tasks.matching { it.name == 'spotbugsMain' }.configureEach {
+        reports { sarif { required = true } }
+    }
+    tasks.matching { it.name == 'spotbugsTest' }.configureEach { enabled = false }
+}

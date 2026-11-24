@@ -1,0 +1,95 @@
+name: Code scan
+
+# 코드 취약점 정적 분석(SAST). 정책: Logssey/security-solution-docs 의 code-security 문서.
+#   - Semgrep(레포 전체: Java API, 채팅 서버 TS, 워크플로) + SpotBugs·FindSecBugs(Java API 바이트코드, 보안 규칙만)
+#   - 지금은 결과만 남긴다(리포트 전용). 발견이 있어도 이 검사는 실패하지 않고, 머지를 막지 않는다
+#   - PR: 결과를 실행 요약과 아티팩트(SARIF)로 남긴다
+#   - main push: 위와 같음 (배포되는 코드의 기록. 대시보드에는 올리지 않는다)
+#   - develop push·수동 실행: 위와 같고, 결과를 Logssey 대시보드 '코드 취약점' 화면으로 올린다
+#     (GitHub OIDC, aud logssey-code. 대시보드는 이 파일이 develop 에서 받은 토큰만 받는다)
+# 대시보드 주소: 레포 변수 CODE_SCAN_URL, 없으면 REACH_URL. 둘 다 없으면 올리기만 건너뛴다.
+# build.gradle 은 바꾸지 않는다. SpotBugs 는 .github/code-scan/spotbugs.init.gradle 로 이 검사에서만 붙인다.
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write   # 대시보드 업로드용 OIDC 토큰. 대시보드가 develop 의 이 워크플로 토큰만 받는다
+    env:
+      SEMGREP_IMAGE: semgrep/semgrep:1.185.0
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Semgrep
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src "$SEMGREP_IMAGE" semgrep scan \
+            --config p/default --config p/java --config p/typescript --config p/owasp-top-ten \
+            --exclude build --exclude node_modules --exclude dist \
+            --metrics off --sarif --output semgrep.sarif
+
+      - name: SpotBugs + FindSecBugs
+        run: |
+          ./gradlew --init-script .github/code-scan/spotbugs.init.gradle spotbugsMain
+          cp build/reports/spotbugs/main.sarif spotbugs.sarif
+
+      - name: Summary
+        run: |
+          {
+            echo "### 코드 취약점 검사 (리포트 전용, 머지를 막지 않음)"
+            echo "| 도구 | High | Medium | Low |"
+            echo "|---|---:|---:|---:|"
+            for tool in semgrep spotbugs; do
+              jq -r --arg tool "$tool" '
+                [.runs[] | (.tool.driver.rules // [] | map({key: .id, value: (.defaultConfiguration.level // "warning")}) | from_entries) as $rules
+                  | .results[] | (.level // $rules[.ruleId] // "warning")] as $levels
+                | "| \($tool) | \($levels | map(select(. == "error")) | length) | \($levels | map(select(. == "warning")) | length) | \($levels | map(select(. != "error" and . != "warning")) | length) |"
+              ' "$tool.sarif"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-scan-sarif
+          path: '*.sarif'
+          retention-days: 14
+
+      - name: Upload to the dashboard
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
+        env:
+          DASHBOARD_URL: ${{ vars.CODE_SCAN_URL || vars.REACH_URL }}
+        run: |
+          if [ -z "$DASHBOARD_URL" ]; then
+            echo "::notice::CODE_SCAN_URL·REACH_URL 변수가 없어 대시보드 업로드를 건너뜁니다"
+            exit 0
+          fi
+          token=$(curl -sSf --retry 3 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=logssey-code" | jq -r .value)
+          for tool in semgrep spotbugs; do
+            curl -sSf --retry 3 --connect-timeout 10 --max-time 120 -X POST \
+              -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+              --data-binary "@$tool.sarif" \
+              "${DASHBOARD_URL%/}/api/v1/code/scans?tool=$tool&commit=$GITHUB_SHA&workspace=$GITHUB_WORKSPACE"
+            echo
+          done
