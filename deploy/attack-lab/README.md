@@ -53,3 +53,23 @@ python lab.py cleanup --instance i-08698ab3a5415d8fb
 ```
 
 This removes only the labelled lab namespace and its ephemeral data. Close the demo IaC PR without merging. ECR images, Git branches and recorded dashboard findings remain as evidence and have separate retention decisions; cleanup does not silently delete them.
+
+## Actual coverage recording
+
+`l3_local.py` uses the existing dashboard analyzer's recorder and matcher. It runs the same local image in an internal Docker network with disposable DB/Redis, records startup and each request separately using checksum-verified JaCoCo 0.8.13, then removes its containers and network. It does not expose host ports or reuse production credentials. Java 21, Python, Docker, and a checkout of dashboard-backend are required.
+
+```powershell
+python deploy/attack-lab/l3_local.py --dashboard-backend <dashboard-backend-path> --evidence-dir <directory-containing-sbom-and-reach-result> --image-info <image.json>
+```
+
+The verified recording scope was `com.reused.*:org.bouncycastle.*`; other packages without recordings must not be described as verified. A recorded function means it executed, not that exploitation conditions were met.
+
+## Verified run: 2026-11-26
+
+- IaC PR: https://github.com/Logssey/infrastructure/pull/83 (closed without merging), dashboard run 17.
+- Image check/scan 68, finding 2176: CVE-2025-14813, `REACHABLE`, L3 `REGION`, only request segment `002`. Image check policy `GATE` returned `FAIL` because of one reachable critical/high finding. This was an actual local analysis uploaded through the existing result API, not an automatic service PR workflow.
+- Runtime finding `RTF-038208`, rule `RUN-002`: actual Falco event, parent Java and child BusyBox shell, lab pod/workload, two occurrences.
+- Image revision `1429ca5c161a4db6548752f3c02eea3822660a48`; manifest digest `sha256:13e9da354e4a29fc8038a3f0ac86765bb655fc57f9e74efde690d63c6f5c82b3`.
+- Six guard tests passed. Live requests: normal 200, no token 403, nonempty body 400, crypto/runtime probes 200. Lab-runner connections to IMDS, internet and production API were blocked.
+
+Remaining integration limits: production L1 accepts only logical cluster `reused-prod` and namespace `reused`, so the lab inventory upload is rejected and the finding's deployment is `UNKNOWN`. Actual Kubernetes evidence confirms the lab is running, but that is not yet connected to the L1 screen. Runtime event `imageDigest` is absent and `evaluationStatus` is `PENDING_CONTEXT`; do not claim automatic image-to-runtime digest correlation or final risk evaluation. Production configuration was deliberately left unchanged.

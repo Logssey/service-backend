@@ -13,7 +13,7 @@ guard='[ "$(kubectl get namespace '+NS+' -o jsonpath=\'{.metadata.labels.logssey
 if a.action=='status':
     script=prefix+guard+f'kubectl -n {NS} get pods,services,networkpolicies\n'
 elif a.action=='cleanup':
-    script=prefix+(HERE/'cleanup.sh').read_text(encoding='utf-8')
+    script=prefix+"bash <<'LAB_CLEANUP'\n"+(HERE/'cleanup.sh').read_text(encoding='utf-8')+"\nLAB_CLEANUP\n"
 elif a.action=='restart':
     script=prefix+guard+f'kubectl -n {NS} rollout restart deployment/reused-api-fixture\nkubectl -n {NS} rollout status deployment/reused-api-fixture --timeout=180s\n'
 else:
