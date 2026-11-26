@@ -26,6 +26,7 @@ From this directory, with the authorized AWS profile and control-plane SSM acces
 
 ```powershell
 python lab.py status --instance i-08698ab3a5415d8fb
+python lab.py collect --instance i-08698ab3a5415d8fb
 python lab.py normal --instance i-08698ab3a5415d8fb
 python lab.py unauthorized --instance i-08698ab3a5415d8fb
 python lab.py reject-body --instance i-08698ab3a5415d8fb
@@ -33,7 +34,9 @@ python lab.py crypto --instance i-08698ab3a5415d8fb
 python lab.py runtime --instance i-08698ab3a5415d8fb
 ```
 
-In Logssey, filter runtime findings to namespace `reused-attack-lab`, rule `RUN-002`. Repeated execution can increase an existing finding's occurrence count; do not expect a fresh card every time. `restart` resets the probe limit and creates a new pod, but use it only between recordings.
+In Logssey, inspect scan 68 and finding 2176, then the running workload `reused-api-fixture`. L1 shows `RUNNING` and `scanMatch=MATCH` by digest. Filter runtime findings to namespace `reused-attack-lab`, rule `RUN-002`. Repeated execution can increase an existing finding's occurrence count; do not expect a fresh card every time. `restart` resets the probe limit and creates a new pod, but use it only between recordings, followed by `collect`.
+
+The dedicated `reach/reach-l1-demo-collector` also runs every five minutes. `collect` runs it immediately and waits for success. It shares the existing collector service account but has only pod-list permission in the lab namespace, not access to lab Secrets. Production collection remains on its original schedule.
 
 ## Build and render
 
@@ -48,11 +51,13 @@ Use a single-platform manifest (`--provenance=false`) so the deployed imageID an
 
 ## Cleanup after recording
 
+First remove `reach/l1/demo-collector-cronjob.yaml` and `reach/l1/demo-collector-rbac.yaml` from the GitOps main branch through review. Wait for Argo `reach-l1` to sync and prune those demo resources; preserve `reach-l1-collector`. Then run:
+
 ```powershell
 python lab.py cleanup --instance i-08698ab3a5415d8fb
 ```
 
-This removes only the labelled lab namespace and its ephemeral data. Close the demo IaC PR without merging. ECR images, Git branches and recorded dashboard findings remain as evidence and have separate retention decisions; cleanup does not silently delete them.
+This removes only the labelled lab namespace and its ephemeral data. Cleanup refuses while the GitOps demo collector or lab RoleBinding still exists, to prevent automatic recreation conflicts. Afterwards remove the lab AppProject destination (apply that project file manually) and lab namespace from the dashboard L1 allowlist, restarting only the dashboard API. Close the demo IaC PR without merging. ECR images, Git branches and recorded dashboard findings remain as evidence and have separate retention decisions; cleanup does not silently delete them.
 
 ## Actual coverage recording
 
@@ -72,4 +77,12 @@ The verified recording scope was `com.reused.*:org.bouncycastle.*`; other packag
 - Image revision `1429ca5c161a4db6548752f3c02eea3822660a48`; manifest digest `sha256:13e9da354e4a29fc8038a3f0ac86765bb655fc57f9e74efde690d63c6f5c82b3`.
 - Six guard tests passed. Live requests: normal 200, no token 403, nonempty body 400, crypto/runtime probes 200. Lab-runner connections to IMDS, internet and production API were blocked.
 
-Remaining integration limits: production L1 accepts only logical cluster `reused-prod` and namespace `reused`, so the lab inventory upload is rejected and the finding's deployment is `UNKNOWN`. Actual Kubernetes evidence confirms the lab is running, but that is not yet connected to the L1 screen. Runtime event `imageDigest` is absent and `evaluationStatus` is `PENDING_CONTEXT`; do not claim automatic image-to-runtime digest correlation or final risk evaluation. Production configuration was deliberately left unchanged.
+### L1 and runtime integration verified later on the same day
+
+- GitOps PR #14 merged: https://github.com/Logssey/gitops/pull/14. Added separate demo L1 collection and the native Falco `container.image.digest` field in custom rule outputs. Existing rule conditions and production service deployments were unchanged. Both Argo applications are Synced/Healthy, with all three Falco sensors ready.
+- Infrastructure PR #84 merged: https://github.com/Logssey/infrastructure/pull/84. Dashboard L1 now allows `reused,reused-attack-lab`. Only the dashboard API was restarted with the same image; no Re:Used application rollout was performed. API settings backup: `/opt/logssey/backups/demo-l1-20261126T123326Z`.
+- Real service-account collection records `source=CLUSTER_READER`; lab workload is `RUNNING`, matches scan 68 by digest, and finding 2176 is now `RUNNING`.
+- A fresh runtime probe produced `RTF-040225`, with image digest equal to the scanned image, recorded L3 build, and actual lab container imageID. No event was manually inserted.
+- L1 calls the physical cluster `reused-prod`; runtime calls it `logssey-prod`. These are existing logical aliases. Correlation verified by namespace, workload, Pod and identical digest; no cross-screen navigation feature was added.
+
+Remaining limits: runtime `evaluationStatus` is still `PENDING_CONTEXT` and final severity is not assigned. Matching the image digest does not itself complete runtime risk evaluation. The native sensor's image display string still includes its reported tag; the separately displayed `imageDigest` is the verified registry manifest digest. L3 evidence was recorded earlier on the same image in an isolated local container; running `crypto` in Kubernetes does not automatically record/upload a new L3 session. No automatic full service PR pipeline, Spring exploit, or crypto-to-shell causal attack chain has been verified.
