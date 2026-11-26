@@ -1,3 +1,4 @@
 *.secret*
 rendered.yaml
 evidence/
+__pycache__/
