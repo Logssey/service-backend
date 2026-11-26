@@ -13,6 +13,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -45,6 +47,12 @@ public class AttackLabController {
         if (body != null && !body.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No input is accepted");
         }
+    }
+
+    // Keep demo rejections intact without changing the production-wide error handler.
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, Object>> rejected(ResponseStatusException error) {
+        return ResponseEntity.status(error.getStatusCode()).body(Map.of("executed", false));
     }
 
     @PostMapping("/internal/attack-lab/crypto/probe")

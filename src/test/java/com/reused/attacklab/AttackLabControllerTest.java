@@ -3,6 +3,10 @@ package com.reused.attacklab;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import com.reused.common.error.GlobalExceptionHandler;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -11,10 +15,10 @@ class AttackLabControllerTest {
 
     @Test void missingProfileOrFlagDoesNotRegisterEndpoints() {
         new ApplicationContextRunner().withUserConfiguration(AttackLabController.class, FixedShellRunner.class)
-                .run(c -> assertFalse(c.containsBean("attackLabController")));
+                .run(c -> assertTrue(c.getBeansOfType(AttackLabController.class).isEmpty()));
         new ApplicationContextRunner().withPropertyValues("spring.profiles.active=attack-lab")
                 .withUserConfiguration(AttackLabController.class, FixedShellRunner.class)
-                .run(c -> assertFalse(c.containsBean("attackLabController")));
+                .run(c -> assertTrue(c.getBeansOfType(AttackLabController.class).isEmpty()));
     }
 
     @Test void invalidNamespaceOrWeakTokenFailsClosed() {
@@ -44,5 +48,16 @@ class AttackLabControllerTest {
         var c = new AttackLabController(TOKEN, "reused-attack-lab", runner);
         assertEquals(true, c.runtime(TOKEN, null).get("executed"));
         verify(runner).run();
+    }
+
+    @Test void httpRejectionsRemainClientErrorsWithProductionAdvice() throws Exception {
+        var runner = mock(FixedShellRunner.class);
+        var mvc = MockMvcBuilders.standaloneSetup(new AttackLabController(TOKEN, "reused-attack-lab", runner))
+                .setControllerAdvice(new GlobalExceptionHandler()).build();
+        var path = "/internal/attack-lab/runtime/java-spawns-shell";
+        mvc.perform(post(path)).andExpect(status().isForbidden());
+        mvc.perform(post(path).header("X-Attack-Lab-Token", TOKEN).contentType("text/plain").content("id"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(runner);
     }
 }

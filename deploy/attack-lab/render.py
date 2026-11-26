@@ -20,7 +20,11 @@ def workload(name, img, port, variables, user=1000, memory='256Mi', volume=None,
     container = {'name':name, 'image':img,'imagePullPolicy':'IfNotPresent','env':variables,
         'securityContext':{'allowPrivilegeEscalation':False,'capabilities':{'drop':['ALL']},'readOnlyRootFilesystem':name!='db'},
         'resources':{'requests':{'cpu':'50m','memory':'64Mi'},'limits':{'cpu':'1000m','memory':memory}}}
-    pod = {'automountServiceAccountToken':False,'securityContext':{'runAsNonRoot':True,'runAsUser':user,
+    pod = {'automountServiceAccountToken':False,
+        'dnsPolicy':'None','dnsConfig':{'nameservers':['10.96.0.3'],
+            'searches':[NS+'.svc.cluster.local','svc.cluster.local','cluster.local'],
+            'options':[{'name':'ndots','value':'5'}]},
+        'securityContext':{'runAsNonRoot':True,'runAsUser':user,
         'runAsGroup':user,'fsGroup':user,'seccompProfile':{'type':'RuntimeDefault'}},'containers':[container],
         'volumes':[{'name':'tmp','emptyDir':{}}]}
     container['volumeMounts']=[{'name':'tmp','mountPath':'/tmp'}]
